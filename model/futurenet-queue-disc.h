@@ -23,9 +23,17 @@ private:
     Ptr<QueueDiscItem> DoDequeue() override;
     Ptr<const QueueDiscItem> DoPeek() override;
 
+    Ptr<QueueDiscItem> DequeueEdf();
+
+    uint32_t m_numPriorityClasses;
+    uint8_t m_defaultPriority;
+    uint32_t m_queueLimit;
+    uint32_t m_schedulingMode;
+
     uint64_t m_deadlineMissCount;
 };
 
 } // namespace ns3
 
 #endif // FUTURENET_QUEUE_DISC_H
+
