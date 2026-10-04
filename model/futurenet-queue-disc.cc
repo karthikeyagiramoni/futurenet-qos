@@ -180,12 +180,71 @@ FutureNetQueueDisc::DoDequeue()
 {
     NS_LOG_FUNCTION(this);
 
+    // EDF mode
     if (m_schedulingMode == 1)
     {
         return GetInternalQueue(0)->Dequeue();
     }
 
-    // Strict Priority
+    // Hybrid mode
+    if (m_schedulingMode == 2)
+    {
+        // Find the highest-priority non-empty queue.
+        for (uint32_t i = 0; i < m_numPriorityClasses; ++i)
+        {
+            Ptr<InternalQueue> queue = GetInternalQueue(i);
+
+            if (queue->IsEmpty())
+            {
+                continue;
+            }
+
+            // Temporarily remove all packets from this priority queue.
+            std::vector<Ptr<QueueDiscItem>> items;
+
+            while (!queue->IsEmpty())
+            {
+                items.push_back(queue->Dequeue());
+            }
+
+            // Find the packet with the earliest deadline.
+            uint32_t selectedIndex = 0;
+            Time earliestDeadline = Time::Max();
+
+            for (uint32_t j = 0; j < items.size(); ++j)
+            {
+                DeadlineTag deadlineTag;
+                Time deadline = Time::Max();
+
+                if (items[j]->GetPacket()->PeekPacketTag(deadlineTag))
+                {
+                    deadline = deadlineTag.GetDeadline();
+                }
+
+                if (deadline < earliestDeadline)
+                {
+                    earliestDeadline = deadline;
+                    selectedIndex = j;
+                }
+            }
+
+            // Put all non-selected packets back.
+            for (uint32_t j = 0; j < items.size(); ++j)
+            {
+                if (j != selectedIndex)
+                {
+                    queue->Enqueue(items[j]);
+                }
+            }
+
+            // Return the earliest-deadline packet.
+            return items[selectedIndex];
+        }
+
+        return nullptr;
+    }
+    
+    // Existing Strict Priority implementation
     for (uint32_t i = 0; i < m_numPriorityClasses; ++i)
     {
         if (!GetInternalQueue(i)->IsEmpty())

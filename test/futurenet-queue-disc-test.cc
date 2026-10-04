@@ -301,6 +301,145 @@ class FutureNetQueueDiscEdfTestCase : public TestCase
 };
 
 /**
+ * @brief Test Hybrid scheduling.
+ *
+ * Hybrid scheduling:
+ * 1. Lower priority number is served first.
+ * 2. Within the same priority, earlier deadline is served first.
+ */
+class FutureNetQueueDiscHybridTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscHybridTestCase()
+        : TestCase("Test FutureNetQueueDisc Hybrid ordering")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> queueDisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->SetAttributeFailSafe("SchedulingMode", UintegerValue(2)),
+            true,
+            "SchedulingMode attribute should exist");
+
+        queueDisc->Initialize();
+
+        Address address;
+
+        // Priority 0, deadline 30 ms
+        Ptr<Packet> packetP0D30 = Create<Packet>(100);
+        DeadlineTag deadlineP0D30;
+        deadlineP0D30.SetDeadline(MilliSeconds(30));
+        packetP0D30->AddPacketTag(deadlineP0D30);
+
+        // Priority 1, deadline 1 ms
+        Ptr<Packet> packetP1D1 = Create<Packet>(100);
+        DeadlineTag deadlineP1D1;
+        deadlineP1D1.SetDeadline(MilliSeconds(1));
+        packetP1D1->AddPacketTag(deadlineP1D1);
+
+        // Priority 2, deadline 20 ms
+        Ptr<Packet> packetP2D20 = Create<Packet>(100);
+        DeadlineTag deadlineP2D20;
+        deadlineP2D20.SetDeadline(MilliSeconds(20));
+        packetP2D20->AddPacketTag(deadlineP2D20);
+
+        // Priority 2, deadline 10 ms
+        Ptr<Packet> packetP2D10 = Create<Packet>(100);
+        DeadlineTag deadlineP2D10;
+        deadlineP2D10.SetDeadline(MilliSeconds(10));
+        packetP2D10->AddPacketTag(deadlineP2D10);
+
+        Ptr<QueueDiscItem> itemP0D30 =
+            Create<FutureNetQueueDiscTestItem>(packetP0D30, address, 0);
+
+        Ptr<QueueDiscItem> itemP1D1 =
+            Create<FutureNetQueueDiscTestItem>(packetP1D1, address, 1);
+
+        Ptr<QueueDiscItem> itemP2D20 =
+            Create<FutureNetQueueDiscTestItem>(packetP2D20, address, 2);
+
+        Ptr<QueueDiscItem> itemP2D10 =
+            Create<FutureNetQueueDiscTestItem>(packetP2D10, address, 2);
+
+        // Enqueue in a deliberately mixed order.
+        queueDisc->Enqueue(itemP2D20);
+        queueDisc->Enqueue(itemP0D30);
+        queueDisc->Enqueue(itemP2D10);
+        queueDisc->Enqueue(itemP1D1);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->GetNPackets(),
+            4,
+            "QueueDisc should contain four packets");
+
+        Ptr<QueueDiscItem> item;
+
+        // Priority 0 must win, even though its deadline is 30 ms.
+        item = queueDisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            item,
+            nullptr,
+            "First dequeued item should not be null");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            item->GetPacket()->GetUid(),
+            packetP0D30->GetUid(),
+            "Priority 0 packet should be dequeued first");
+
+        // Priority 1 must come before priority 2,
+        // even though its deadline is earlier.
+        item = queueDisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            item,
+            nullptr,
+            "Second dequeued item should not be null");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            item->GetPacket()->GetUid(),
+            packetP1D1->GetUid(),
+            "Priority 1 packet should be dequeued second");
+
+        // Within priority 2, EDF should select 10 ms first.
+        item = queueDisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            item,
+            nullptr,
+            "Third dequeued item should not be null");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            item->GetPacket()->GetUid(),
+            packetP2D10->GetUid(),
+            "10 ms deadline should be dequeued before 20 ms within priority 2");
+
+        // Remaining priority 2 packet.
+        item = queueDisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            item,
+            nullptr,
+            "Fourth dequeued item should not be null");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            item->GetPacket()->GetUid(),
+            packetP2D20->GetUid(),
+            "20 ms deadline packet should be dequeued last");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->GetNPackets(),
+            0,
+            "QueueDisc should be empty after all packets are dequeued");
+    }
+};
+
+/**
  * @brief FutureNetQueueDisc test suite.
  */
 class FutureNetQueueDiscTestSuite : public TestSuite
@@ -316,6 +455,9 @@ class FutureNetQueueDiscTestSuite : public TestSuite
                     TestCase::Duration::QUICK);
 
         AddTestCase(new FutureNetQueueDiscEdfTestCase,
+            TestCase::Duration::QUICK);
+        
+        AddTestCase(new FutureNetQueueDiscHybridTestCase,
             TestCase::Duration::QUICK);
     }
 
