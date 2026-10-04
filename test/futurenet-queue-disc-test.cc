@@ -3,6 +3,7 @@
 #include "ns3/futurenet-deadline-tag.h"
 #include "ns3/packet.h"
 #include "ns3/test.h"
+#include "ns3/simulator.h"
 
 using namespace ns3;
 
@@ -440,6 +441,132 @@ class FutureNetQueueDiscHybridTestCase : public TestCase
 };
 
 /**
+ * @brief Test expired packet handling.
+ */
+class FutureNetQueueDiscDeadlineTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscDeadlineTestCase()
+        : TestCase("Test FutureNetQueueDisc expired packet handling")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> queueDisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        // Strict Priority mode.
+        queueDisc->Initialize();
+
+        Address address;
+
+        // Create an already-expired packet.
+        Ptr<Packet> expiredPacket = Create<Packet>(100);
+
+        DeadlineTag deadlineTag;
+        deadlineTag.SetDeadline(MilliSeconds(0));
+        expiredPacket->AddPacketTag(deadlineTag);
+
+        Ptr<QueueDiscItem> expiredItem =
+            Create<FutureNetQueueDiscTestItem>(
+                expiredPacket, address, 0);
+
+        queueDisc->Enqueue(expiredItem);
+
+        // Move simulation time past the deadline.
+        Simulator::Schedule(MilliSeconds(1), []() {});
+
+        Simulator::Run();
+
+        Ptr<QueueDiscItem> item = queueDisc->Dequeue();
+
+        // Default policy is Drop, so the expired packet should be dropped.
+        NS_TEST_ASSERT_MSG_EQ(
+            item,
+            nullptr,
+            "Expired packet should be dropped");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->GetDeadlineMissCount(),
+            1,
+            "Deadline miss count should be one");
+
+        Simulator::Destroy();
+    }
+};
+
+/**
+ * @brief Test expired packet transmit policy.
+ */
+class FutureNetQueueDiscExpiredTransmitTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscExpiredTransmitTestCase()
+        : TestCase("Test FutureNetQueueDisc expired packet transmit policy")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> queueDisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        // Set ExpiredPacketPolicy = 1 (Transmit).
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->SetAttributeFailSafe(
+                "ExpiredPacketPolicy",
+                UintegerValue(1)),
+            true,
+            "ExpiredPacketPolicy attribute should exist");
+
+        queueDisc->Initialize();
+
+        Address address;
+
+        // Create an expired packet.
+        Ptr<Packet> expiredPacket = Create<Packet>(100);
+
+        DeadlineTag deadlineTag;
+        deadlineTag.SetDeadline(MilliSeconds(0));
+        expiredPacket->AddPacketTag(deadlineTag);
+
+        Ptr<QueueDiscItem> expiredItem =
+            Create<FutureNetQueueDiscTestItem>(
+                expiredPacket, address, 0);
+
+        queueDisc->Enqueue(expiredItem);
+
+        // Move simulation time past the deadline.
+        Simulator::Schedule(MilliSeconds(1), []() {});
+
+        Simulator::Run();
+
+        Ptr<QueueDiscItem> item = queueDisc->Dequeue();
+
+        // Expired packet should be transmitted.
+        NS_TEST_ASSERT_MSG_NE(
+            item,
+            nullptr,
+            "Expired packet should be transmitted");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            item->GetPacket()->GetUid(),
+            expiredPacket->GetUid(),
+            "The expired packet should be returned");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->GetDeadlineMissCount(),
+            1,
+            "Deadline miss count should be one");
+
+        Simulator::Destroy();
+    }
+};
+
+/**
  * @brief FutureNetQueueDisc test suite.
  */
 class FutureNetQueueDiscTestSuite : public TestSuite
@@ -455,10 +582,13 @@ class FutureNetQueueDiscTestSuite : public TestSuite
                     TestCase::Duration::QUICK);
 
         AddTestCase(new FutureNetQueueDiscEdfTestCase,
-            TestCase::Duration::QUICK);
+                    TestCase::Duration::QUICK);
         
         AddTestCase(new FutureNetQueueDiscHybridTestCase,
-            TestCase::Duration::QUICK);
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscDeadlineTestCase,
+                    TestCase::Duration::QUICK);
     }
 
 };

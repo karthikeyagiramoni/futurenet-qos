@@ -11,6 +11,8 @@
 #include "ns3/queue.h"
 #include "ns3/enum.h"
 #include "ns3/uinteger.h"
+#include "ns3/simulator.h"
+#include<vector>
 
 namespace ns3
 {
@@ -23,6 +25,8 @@ FutureNetQueueDisc::FutureNetQueueDisc()
       m_defaultPriority(4),
       m_queueLimit(100),
       m_schedulingMode(0),
+      m_expiredPacketPolicy(0),
+      m_enableDeadlineTracing(true),
       m_deadlineMissCount(0)
 {
 }
@@ -57,7 +61,24 @@ FutureNetQueueDisc::GetTypeId()
                           "Queue scheduling mode: 0=StrictPriority, 1=EDF, 2=Hybrid.",
                           UintegerValue(0),
                           MakeUintegerAccessor(&FutureNetQueueDisc::m_schedulingMode),
-                          MakeUintegerChecker<uint32_t>(0, 2));
+                          MakeUintegerChecker<uint32_t>(0, 2))
+            .AddAttribute("ExpiredPacketPolicy",
+                          "Expired packet policy: 0=Drop, 1=Transmit.",
+                          UintegerValue(0),
+                          MakeUintegerAccessor(
+                              &FutureNetQueueDisc::m_expiredPacketPolicy),
+                          MakeUintegerChecker<uint32_t>(0, 1))
+            .AddAttribute("EnableDeadlineTracing",
+                          "Enable deadline miss tracing.",
+                          BooleanValue(true),
+                          MakeBooleanAccessor(
+                              &FutureNetQueueDisc::m_enableDeadlineTracing),
+                          MakeBooleanChecker())
+            .AddTraceSource("DeadlineMiss",
+                            "Trace emitted when a packet misses its deadline.",
+                            MakeTraceSourceAccessor(
+                                &FutureNetQueueDisc::m_deadlineMissTrace),
+                            "ns3::TracedCallback::Uint32Uint8Time");
 
     return tid;
 }
@@ -148,6 +169,62 @@ FutureNetQueueDisc::DequeueEdf()
     return nullptr;
 }
 
+Ptr<QueueDiscItem>
+FutureNetQueueDisc::CheckDeadline(Ptr<QueueDiscItem> item)
+{
+    if (item == nullptr)
+    {
+        return nullptr;
+    }
+
+    DeadlineTag deadlineTag;
+
+    // No deadline means the packet cannot miss a deadline.
+    if (!item->GetPacket()->PeekPacketTag(deadlineTag))
+    {
+        return item;
+    }
+
+    Time deadline = deadlineTag.GetDeadline();
+    Time now = Simulator::Now();
+
+    // Packet has not expired.
+    if (now <= deadline)
+    {
+        return item;
+    }
+
+    // Deadline missed.
+    m_deadlineMissCount++;
+
+    FutureNetTrafficTag trafficTag;
+    uint8_t priority = m_defaultPriority;
+    uint32_t flowId = 0;
+
+    if (item->GetPacket()->PeekPacketTag(trafficTag))
+    {
+        priority = trafficTag.GetPriority();
+        flowId = trafficTag.GetFlowId();
+    }
+
+    Time lateness = now - deadline;
+
+    if (m_enableDeadlineTracing)
+    {
+        m_deadlineMissTrace(flowId, priority, lateness);
+    }
+
+    // ExpiredPacketPolicy:
+    // 0 = Drop
+    // 1 = Transmit
+    if (m_expiredPacketPolicy == 0)
+    {
+        return nullptr;
+    }
+
+    return item;
+}
+
 bool
 FutureNetQueueDisc::DoEnqueue(Ptr<QueueDiscItem> item)
 {
@@ -183,7 +260,19 @@ FutureNetQueueDisc::DoDequeue()
     // EDF mode
     if (m_schedulingMode == 1)
     {
-        return GetInternalQueue(0)->Dequeue();
+        while (!GetInternalQueue(0)->IsEmpty())
+        {
+            Ptr<QueueDiscItem> item = GetInternalQueue(0)->Dequeue();
+
+            item = CheckDeadline(item);
+
+            if (item != nullptr)
+            {
+                return item;
+            }
+        }
+
+        return nullptr;
     }
 
     // Hybrid mode
@@ -204,19 +293,38 @@ FutureNetQueueDisc::DoDequeue()
 
             while (!queue->IsEmpty())
             {
-                items.push_back(queue->Dequeue());
+            items.push_back(queue->Dequeue());
+            }
+
+            // Remove expired packets and keep valid packets.
+            std::vector<Ptr<QueueDiscItem>> validItems;
+
+            for (auto item : items)
+            {
+                Ptr<QueueDiscItem> checkedItem = CheckDeadline(item);
+
+                if (checkedItem != nullptr)
+                {
+                validItems.push_back(checkedItem);
+                }
+            }
+
+            // Put valid packets back if none remain to select.
+            if (validItems.empty())
+            {
+                continue;
             }
 
             // Find the packet with the earliest deadline.
             uint32_t selectedIndex = 0;
             Time earliestDeadline = Time::Max();
 
-            for (uint32_t j = 0; j < items.size(); ++j)
+            for (uint32_t j = 0; j < validItems.size(); ++j)
             {
                 DeadlineTag deadlineTag;
                 Time deadline = Time::Max();
 
-                if (items[j]->GetPacket()->PeekPacketTag(deadlineTag))
+                if (validItems[j]->GetPacket()->PeekPacketTag(deadlineTag))
                 {
                     deadline = deadlineTag.GetDeadline();
                 }
@@ -229,29 +337,39 @@ FutureNetQueueDisc::DoDequeue()
             }
 
             // Put all non-selected packets back.
-            for (uint32_t j = 0; j < items.size(); ++j)
+            for (uint32_t j = 0; j < validItems.size(); ++j)
             {
                 if (j != selectedIndex)
                 {
-                    queue->Enqueue(items[j]);
+                    queue->Enqueue(validItems[j]);
                 }
             }
 
             // Return the earliest-deadline packet.
-            return items[selectedIndex];
+            return validItems[selectedIndex];
         }
 
         return nullptr;
     }
-    
-    // Existing Strict Priority implementation
+
+    // Strict Priority implementation
     for (uint32_t i = 0; i < m_numPriorityClasses; ++i)
     {
-        if (!GetInternalQueue(i)->IsEmpty())
+        Ptr<InternalQueue> queue = GetInternalQueue(i);
+
+        while (!queue->IsEmpty())
         {
-            return GetInternalQueue(i)->Dequeue();
+            Ptr<QueueDiscItem> item = queue->Dequeue();
+
+            item = CheckDeadline(item);
+
+            if (item != nullptr)
+            {
+                return item;
+            }
         }
     }
+
 
     return nullptr;
 }
