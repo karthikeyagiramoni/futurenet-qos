@@ -41,6 +41,33 @@ FutureNetQueueDiscTestItem::Mark()
     return false;
 }
 
+class FutureNetQueueDiscNoTagTestItem : public QueueDiscItem
+{
+  public:
+    FutureNetQueueDiscNoTagTestItem(Ptr<Packet> packet, const Address& address);
+
+    void AddHeader() override;
+    bool Mark() override;
+};
+
+FutureNetQueueDiscNoTagTestItem::FutureNetQueueDiscNoTagTestItem(
+    Ptr<Packet> packet,
+    const Address& address)
+    : QueueDiscItem(packet, address, 0)
+{
+}
+
+void
+FutureNetQueueDiscNoTagTestItem::AddHeader()
+{
+}
+
+bool
+FutureNetQueueDiscNoTagTestItem::Mark()
+{
+    return false;
+}
+
 uint32_t g_expiredDropFlowId = 0;
 uint8_t g_expiredDropPriority = 255;
 uint32_t g_expiredDropCount = 0;
@@ -637,6 +664,32 @@ class FutureNetQueueDiscDeadlineTestCase : public TestCase
             g_classDequeuedSojournTime,
             MilliSeconds(5),
             "ClassDequeued sojourn time should be 5 ms");
+
+        // Test packet without FutureNetTrafficTag uses DefaultPriority
+        Ptr<FutureNetQueueDisc> noTagQueueDisc = CreateObject<FutureNetQueueDisc>();
+
+        noTagQueueDisc->SetAttribute("SchedulingMode", UintegerValue(0));
+        noTagQueueDisc->SetAttribute("DefaultPriority", UintegerValue(2));
+        noTagQueueDisc->Initialize();
+
+        Ptr<Packet> noTagPacket = Create<Packet>();
+        Ptr<QueueDiscItem> noTagItem =
+            Create<FutureNetQueueDiscNoTagTestItem>(noTagPacket, Address());
+
+        NS_TEST_ASSERT_MSG_EQ(noTagQueueDisc->Enqueue(noTagItem),
+                            true,
+                            "Packet without tag should be enqueued");
+
+        Ptr<QueueDiscItem> dequeuedNoTag = noTagQueueDisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(dequeuedNoTag,
+                            nullptr,
+                            "Packet without tag should be dequeued");
+
+        FutureNetTrafficTag trafficTag;
+        NS_TEST_ASSERT_MSG_EQ(dequeuedNoTag->GetPacket()->PeekPacketTag(trafficTag),
+                            false,
+                            "Packet should not have a FutureNetTrafficTag");
 
         Simulator::Destroy();
     }
