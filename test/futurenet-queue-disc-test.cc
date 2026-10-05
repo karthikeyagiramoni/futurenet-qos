@@ -4,6 +4,7 @@
 #include "ns3/packet.h"
 #include "ns3/test.h"
 #include "ns3/simulator.h"
+#include "ns3/uinteger.h"
 
 using namespace ns3;
 
@@ -88,12 +89,46 @@ class FutureNetQueueDiscTestCase : public TestCase
         NS_TEST_ASSERT_MSG_EQ(queueDisc->GetNInternalQueues(),
                               0,
                               "Internal queues should not exist before initialization");
+        queueDisc->SetAttribute("QueueLimit", UintegerValue(2));
 
         queueDisc->Initialize();
 
         NS_TEST_ASSERT_MSG_EQ(queueDisc->GetNInternalQueues(),
                               4,
                               "FutureNetQueueDisc should create four priority queues");
+        
+        Ptr<Packet> packet1 = Create<Packet>();
+        Ptr<Packet> packet2 = Create<Packet>();
+        Ptr<Packet> packet3 = Create<Packet>();
+
+        Ptr<QueueDiscItem> item1 =
+            Create<FutureNetQueueDiscTestItem>(packet1, Address(), 0);
+
+        Ptr<QueueDiscItem> item2 =
+            Create<FutureNetQueueDiscTestItem>(packet2, Address(), 0);
+
+        Ptr<QueueDiscItem> item3 =
+            Create<FutureNetQueueDiscTestItem>(packet3, Address(), 0);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->Enqueue(item1),
+            true,
+            "First packet should be enqueued");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->Enqueue(item2),
+            true,
+            "Second packet should be enqueued");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->Enqueue(item3),
+            false,
+            "Third packet should be dropped when QueueLimit is 2");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->GetNPackets(),
+            2,
+            "Queue should contain only two packets");
 
         NS_TEST_ASSERT_MSG_EQ(queueDisc->GetDeadlineMissCount(),
                               0,
