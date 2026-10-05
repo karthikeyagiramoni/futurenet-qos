@@ -40,6 +40,18 @@ FutureNetQueueDiscTestItem::Mark()
     return false;
 }
 
+uint32_t g_expiredDropFlowId = 0;
+uint8_t g_expiredDropPriority = 255;
+uint32_t g_expiredDropCount = 0;
+
+void
+ExpiredDropCallback(uint32_t flowId, uint8_t priority)
+{
+    g_expiredDropFlowId = flowId;
+    g_expiredDropPriority = priority;
+    g_expiredDropCount++;
+}
+
 /**
  * @brief Test FutureNetQueueDisc construction.
  */
@@ -460,6 +472,14 @@ class FutureNetQueueDiscDeadlineTestCase : public TestCase
         // Strict Priority mode.
         queueDisc->Initialize();
 
+        g_expiredDropFlowId = 0;
+        g_expiredDropPriority = 255;
+        g_expiredDropCount = 0;
+
+        queueDisc->TraceConnectWithoutContext(
+            "ExpiredDrop",
+            MakeCallback(&ExpiredDropCallback));
+
         Address address;
 
         // Create an already-expired packet.
@@ -492,6 +512,21 @@ class FutureNetQueueDiscDeadlineTestCase : public TestCase
             queueDisc->GetDeadlineMissCount(),
             1,
             "Deadline miss count should be one");
+        
+        NS_TEST_ASSERT_MSG_EQ(
+            g_expiredDropCount,
+            1,
+            "ExpiredDrop trace should fire once");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            g_expiredDropFlowId,
+            0,
+            "ExpiredDrop flow ID should be zero");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            g_expiredDropPriority,
+            0,
+            "ExpiredDrop priority should be zero");
 
         Simulator::Destroy();
     }

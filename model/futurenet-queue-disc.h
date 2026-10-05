@@ -40,6 +40,7 @@ private:
     bool m_enableDeadlineTracing;
 
     TracedCallback<uint32_t, uint8_t, Time> m_deadlineMissTrace;
+    TracedCallback<uint32_t, uint8_t> m_expiredDropTrace;
 
     uint64_t m_deadlineMissCount;
 };

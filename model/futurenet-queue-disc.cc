@@ -78,7 +78,12 @@ FutureNetQueueDisc::GetTypeId()
                             "Trace emitted when a packet misses its deadline.",
                             MakeTraceSourceAccessor(
                                 &FutureNetQueueDisc::m_deadlineMissTrace),
-                            "ns3::TracedCallback::Uint32Uint8Time");
+                            "ns3::TracedCallback::Uint32Uint8Time")
+            .AddTraceSource("ExpiredDrop",
+                            "Trace emitted when an expired packet is dropped.",
+                            MakeTraceSourceAccessor(
+                                &FutureNetQueueDisc::m_expiredDropTrace),
+                            "ns3::TracedCallback::Uint32Uint8");
 
     return tid;
 }
@@ -219,6 +224,11 @@ FutureNetQueueDisc::CheckDeadline(Ptr<QueueDiscItem> item)
     // 1 = Transmit
     if (m_expiredPacketPolicy == 0)
     {
+        if (m_enableDeadlineTracing)
+        {
+            m_expiredDropTrace(flowId, priority);
+        }
+
         return nullptr;
     }
 
