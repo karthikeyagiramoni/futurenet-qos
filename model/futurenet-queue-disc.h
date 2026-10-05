@@ -39,6 +39,7 @@ private:
     uint32_t m_schedulingMode;
 
     // Deadline handling
+    Time m_defaultDeadline;
     uint32_t m_expiredPacketPolicy;
     bool m_enableDeadlineTracing;
 

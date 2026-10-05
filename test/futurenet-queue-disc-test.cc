@@ -690,6 +690,37 @@ class FutureNetQueueDiscDeadlineTestCase : public TestCase
         NS_TEST_ASSERT_MSG_EQ(dequeuedNoTag->GetPacket()->PeekPacketTag(trafficTag),
                             false,
                             "Packet should not have a FutureNetTrafficTag");
+        
+        // Test DefaultDeadline for packet without DeadlineTag
+        Ptr<FutureNetQueueDisc> defaultDeadlineQueueDisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        defaultDeadlineQueueDisc->SetAttribute("SchedulingMode",
+                                                UintegerValue(0));
+        defaultDeadlineQueueDisc->SetAttribute("DefaultDeadline",
+                                                TimeValue(MilliSeconds(10)));
+        defaultDeadlineQueueDisc->Initialize();
+
+        Ptr<Packet> defaultDeadlinePacket = Create<Packet>();
+
+        Ptr<QueueDiscItem> defaultDeadlineItem =
+            Create<FutureNetQueueDiscNoTagTestItem>(
+                defaultDeadlinePacket, Address());
+
+        NS_TEST_ASSERT_MSG_EQ(defaultDeadlineQueueDisc->Enqueue(defaultDeadlineItem),
+                            true,
+                            "Packet without deadline should be enqueued");
+
+        DeadlineTag defaultDeadlineTag;
+
+        NS_TEST_ASSERT_MSG_EQ(
+            defaultDeadlineItem->GetPacket()->PeekPacketTag(defaultDeadlineTag),
+            true,
+            "DefaultDeadline should add a DeadlineTag");
+
+        NS_TEST_ASSERT_MSG_EQ(defaultDeadlineTag.GetDeadline(),
+                            MilliSeconds(10),
+                            "Default deadline should be 10 ms");
 
         Simulator::Destroy();
     }

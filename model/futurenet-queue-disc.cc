@@ -25,6 +25,7 @@ FutureNetQueueDisc::FutureNetQueueDisc()
       m_defaultPriority(4),
       m_queueLimit(100),
       m_schedulingMode(0),
+      m_defaultDeadline(Time::Min()),
       m_expiredPacketPolicy(0),
       m_enableDeadlineTracing(true),
       m_deadlineMissCount(0)
@@ -68,6 +69,12 @@ FutureNetQueueDisc::GetTypeId()
                           MakeUintegerAccessor(
                               &FutureNetQueueDisc::m_expiredPacketPolicy),
                           MakeUintegerChecker<uint32_t>(0, 1))
+            .AddAttribute("DefaultDeadline",
+                          "Default deadline assigned to packets without a DeadlineTag.",
+                          TimeValue(Time::Min()),
+                          MakeTimeAccessor(
+                              &FutureNetQueueDisc::m_defaultDeadline),
+                          MakeTimeChecker())
             .AddAttribute("EnableDeadlineTracing",
                           "Enable deadline miss tracing.",
                           BooleanValue(true),
@@ -292,6 +299,15 @@ FutureNetQueueDisc::DoEnqueue(Ptr<QueueDiscItem> item)
     if (item->GetPacket()->PeekPacketTag(tag))
     {
         priority = tag.GetPriority();
+    }
+
+    DeadlineTag deadlineTag;
+
+    if (!item->GetPacket()->PeekPacketTag(deadlineTag) &&
+        m_defaultDeadline != Time::Min())
+    {
+        deadlineTag.SetDeadline(m_defaultDeadline);
+        item->GetPacket()->AddPacketTag(deadlineTag);
     }
 
     if (priority >= m_numPriorityClasses)
