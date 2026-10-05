@@ -450,6 +450,19 @@ FutureNetQueueDisc::DoPeek()
 {
     NS_LOG_FUNCTION(this);
 
+    // EDF mode uses a single internal EDF queue.
+    if (m_schedulingMode == 1)
+    {
+        if (!GetInternalQueue(0)->IsEmpty())
+        {
+            return GetInternalQueue(0)->Peek();
+        }
+
+        return nullptr;
+    }
+
+    // Strict Priority and Hybrid:
+    // return the head packet from the highest-priority non-empty queue.
     for (uint32_t i = 0; i < m_numPriorityClasses; ++i)
     {
         if (!GetInternalQueue(i)->IsEmpty())

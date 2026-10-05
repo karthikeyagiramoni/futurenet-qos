@@ -384,6 +384,62 @@ class FutureNetQueueDiscEdfTestCase : public TestCase
         NS_TEST_ASSERT_MSG_EQ(queueDisc->GetNPackets(),
                               0,
                               "QueueDisc should be empty after all packets are dequeued");
+        // Test EDF DoPeek selects the earliest deadline without removing the packet
+        Ptr<FutureNetQueueDisc> peekQueueDisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        peekQueueDisc->SetAttribute("SchedulingMode", UintegerValue(1));
+        peekQueueDisc->Initialize();
+
+        Ptr<Packet> latePacket = Create<Packet>();
+
+        DeadlineTag lateDeadline;
+        lateDeadline.SetDeadline(MilliSeconds(20));
+        latePacket->AddPacketTag(lateDeadline);
+
+        FutureNetTrafficTag lateTrafficTag;
+        lateTrafficTag.SetPriority(0);
+        lateTrafficTag.SetFlowId(1);
+        latePacket->AddPacketTag(lateTrafficTag);
+
+        Ptr<QueueDiscItem> lateItem =
+            Create<FutureNetQueueDiscTestItem>(latePacket, Address(), 0);
+
+        Ptr<Packet> earlyPacket = Create<Packet>();
+
+        DeadlineTag earlyDeadline;
+        earlyDeadline.SetDeadline(MilliSeconds(10));
+        earlyPacket->AddPacketTag(earlyDeadline);
+
+        FutureNetTrafficTag earlyTrafficTag;
+        earlyTrafficTag.SetPriority(1);
+        earlyTrafficTag.SetFlowId(2);
+        earlyPacket->AddPacketTag(earlyTrafficTag);
+
+        Ptr<QueueDiscItem> earlyItem =
+            Create<FutureNetQueueDiscTestItem>(earlyPacket, Address(), 1);
+
+        NS_TEST_ASSERT_MSG_EQ(peekQueueDisc->Enqueue(lateItem),
+                            true,
+                            "Late packet should be enqueued");
+
+        NS_TEST_ASSERT_MSG_EQ(peekQueueDisc->Enqueue(earlyItem),
+                            true,
+                            "Early packet should be enqueued");
+
+        Ptr<const QueueDiscItem> peekedItem = peekQueueDisc->Peek();
+
+        NS_TEST_ASSERT_MSG_NE(peekedItem,
+                            nullptr,
+                            "Peek should return a packet");
+
+        NS_TEST_ASSERT_MSG_EQ(peekedItem->GetPacket()->GetUid(),
+                            earlyPacket->GetUid(),
+                            "EDF Peek should return the earliest-deadline packet");
+
+        NS_TEST_ASSERT_MSG_EQ(peekQueueDisc->GetNPackets(),
+                            2,
+                            "Peek should not remove the packet");
     }
 };
 
