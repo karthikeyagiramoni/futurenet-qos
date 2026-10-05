@@ -28,7 +28,9 @@ FutureNetQueueDisc::FutureNetQueueDisc()
       m_defaultDeadline(Time::Min()),
       m_expiredPacketPolicy(0),
       m_enableDeadlineTracing(true),
-      m_deadlineMissCount(0)
+      m_deadlineMissCount(0),
+      m_deadlineCheckInterval(Seconds(0)),
+      m_lastDeadlineCheck(Seconds(0))
 {
 }
 
@@ -74,6 +76,11 @@ FutureNetQueueDisc::GetTypeId()
                           TimeValue(Time::Min()),
                           MakeTimeAccessor(
                               &FutureNetQueueDisc::m_defaultDeadline),
+                          MakeTimeChecker())
+            .AddAttribute("DeadlineCheckInterval",
+                          "Interval between deadline checks.",
+                          TimeValue(Seconds(0)),
+                          MakeTimeAccessor(&FutureNetQueueDisc::m_deadlineCheckInterval),
                           MakeTimeChecker())
             .AddAttribute("EnableDeadlineTracing",
                           "Enable deadline miss tracing.",
@@ -194,6 +201,17 @@ FutureNetQueueDisc::CheckDeadline(Ptr<QueueDiscItem> item)
         return nullptr;
     }
 
+    Time now = Simulator::Now();
+
+    // A zero interval means check every dequeue.
+    if (m_deadlineCheckInterval > Seconds(0) &&
+        now - m_lastDeadlineCheck < m_deadlineCheckInterval)
+    {
+        return item;
+    }
+
+    m_lastDeadlineCheck = now;
+
     DeadlineTag deadlineTag;
 
     // No deadline means the packet cannot miss a deadline.
@@ -203,7 +221,6 @@ FutureNetQueueDisc::CheckDeadline(Ptr<QueueDiscItem> item)
     }
 
     Time deadline = deadlineTag.GetDeadline();
-    Time now = Simulator::Now();
 
     // Packet has not expired.
     if (now <= deadline)

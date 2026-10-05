@@ -50,6 +50,8 @@ private:
     std::unordered_map<uint64_t, Time> m_enqueueTimes;
 
     uint64_t m_deadlineMissCount;
+    Time m_deadlineCheckInterval;
+    Time m_lastDeadlineCheck;
 };
 
 } // namespace ns3

@@ -777,8 +777,49 @@ class FutureNetQueueDiscDeadlineTestCase : public TestCase
         NS_TEST_ASSERT_MSG_EQ(defaultDeadlineTag.GetDeadline(),
                             MilliSeconds(10),
                             "Default deadline should be 10 ms");
+        
+        // Test DeadlineCheckInterval
+        Ptr<FutureNetQueueDisc> intervalQueueDisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        intervalQueueDisc->SetAttribute("SchedulingMode", UintegerValue(0));
+        intervalQueueDisc->SetAttribute("DeadlineCheckInterval",
+                                        TimeValue(MilliSeconds(10)));
+        intervalQueueDisc->Initialize();
+
+        Ptr<Packet> intervalPacket = Create<Packet>();
+
+        DeadlineTag intervalDeadline;
+        intervalDeadline.SetDeadline(MilliSeconds(5));
+        intervalPacket->AddPacketTag(intervalDeadline);
+
+        FutureNetTrafficTag intervalTrafficTag;
+        intervalTrafficTag.SetPriority(0);
+        intervalTrafficTag.SetFlowId(10);
+        intervalPacket->AddPacketTag(intervalTrafficTag);
+
+        Ptr<QueueDiscItem> intervalItem =
+            Create<FutureNetQueueDiscTestItem>(intervalPacket, Address(), 0);
+
+        NS_TEST_ASSERT_MSG_EQ(intervalQueueDisc->Enqueue(intervalItem),
+                            true,
+                            "Packet should be enqueued");
+
+        // Advance beyond the packet deadline.
+        Simulator::Schedule(MilliSeconds(6), [&intervalQueueDisc]() {
+            intervalQueueDisc->Dequeue();
+        });
+
+        Simulator::Run();
+
+        Ptr<QueueDiscItem> intervalResult = intervalQueueDisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_EQ(intervalResult,
+                            nullptr,
+                            "Expired packet should be dropped");
 
         Simulator::Destroy();
+
     }
 };
 
