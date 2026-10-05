@@ -83,7 +83,12 @@ FutureNetQueueDisc::GetTypeId()
                             "Trace emitted when an expired packet is dropped.",
                             MakeTraceSourceAccessor(
                                 &FutureNetQueueDisc::m_expiredDropTrace),
-                            "ns3::TracedCallback::Uint32Uint8");
+                            "ns3::TracedCallback::Uint32Uint8")
+            .AddTraceSource("ClassDequeued",
+                            "Trace emitted when a packet is dequeued from a priority class.",
+                            MakeTraceSourceAccessor(
+                                &FutureNetQueueDisc::m_classDequeuedTrace),
+                            "ns3::TracedCallback::Uint8Time");
 
     return tid;
 }
@@ -235,9 +240,45 @@ FutureNetQueueDisc::CheckDeadline(Ptr<QueueDiscItem> item)
     return item;
 }
 
+void
+FutureNetQueueDisc::TraceClassDequeued(Ptr<QueueDiscItem> item)
+{
+    if (item == nullptr)
+    {
+        return;
+    }
+
+    uint8_t priority = m_defaultPriority;
+
+    FutureNetTrafficTag trafficTag;
+    if (item->GetPacket()->PeekPacketTag(trafficTag))
+    {
+        priority = trafficTag.GetPriority();
+    }
+
+    if (priority >= m_numPriorityClasses)
+    {
+        priority = m_numPriorityClasses - 1;
+    }
+
+    uint64_t packetUid = item->GetPacket()->GetUid();
+    Time sojournTime = Seconds(0);
+
+    auto it = m_enqueueTimes.find(packetUid);
+
+    if (it != m_enqueueTimes.end())
+    {
+        sojournTime = Simulator::Now() - it->second;
+        m_enqueueTimes.erase(it);
+    }
+
+    m_classDequeuedTrace(priority, sojournTime);
+}
+
 bool
 FutureNetQueueDisc::DoEnqueue(Ptr<QueueDiscItem> item)
 {
+    m_enqueueTimes[item->GetPacket()->GetUid()] = Simulator::Now();
     if (m_schedulingMode == 1)
     {
         return GetInternalQueue(0)->Enqueue(item);
@@ -278,6 +319,7 @@ FutureNetQueueDisc::DoDequeue()
 
             if (item != nullptr)
             {
+                TraceClassDequeued(item);
                 return item;
             }
         }
@@ -356,6 +398,7 @@ FutureNetQueueDisc::DoDequeue()
             }
 
             // Return the earliest-deadline packet.
+            TraceClassDequeued(validItems[selectedIndex]);
             return validItems[selectedIndex];
         }
 
@@ -375,6 +418,7 @@ FutureNetQueueDisc::DoDequeue()
 
             if (item != nullptr)
             {
+                TraceClassDequeued(item);
                 return item;
             }
         }

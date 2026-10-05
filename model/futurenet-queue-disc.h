@@ -5,6 +5,8 @@
 
 #include "ns3/traced-callback.h"
 
+#include <unordered_map>
+
 namespace ns3
 {
 
@@ -23,6 +25,7 @@ private:
     void InitializeParams() override;
 
     Ptr<QueueDiscItem> CheckDeadline(Ptr<QueueDiscItem> item);
+    void TraceClassDequeued(Ptr<QueueDiscItem> item);
 
     bool DoEnqueue(Ptr<QueueDiscItem> item) override;
     Ptr<QueueDiscItem> DoDequeue() override;
@@ -41,6 +44,9 @@ private:
 
     TracedCallback<uint32_t, uint8_t, Time> m_deadlineMissTrace;
     TracedCallback<uint32_t, uint8_t> m_expiredDropTrace;
+    TracedCallback<uint8_t, Time> m_classDequeuedTrace;
+
+    std::unordered_map<uint64_t, Time> m_enqueueTimes;
 
     uint64_t m_deadlineMissCount;
 };

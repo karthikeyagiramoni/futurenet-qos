@@ -52,6 +52,18 @@ ExpiredDropCallback(uint32_t flowId, uint8_t priority)
     g_expiredDropCount++;
 }
 
+uint8_t g_classDequeuedPriority = 255;
+Time g_classDequeuedSojournTime = Time::Min();
+uint32_t g_classDequeuedCount = 0;
+
+void
+ClassDequeuedCallback(uint8_t priority, Time sojournTime)
+{
+    g_classDequeuedPriority = priority;
+    g_classDequeuedSojournTime = sojournTime;
+    g_classDequeuedCount++;
+}
+
 /**
  * @brief Test FutureNetQueueDisc construction.
  */
@@ -476,9 +488,17 @@ class FutureNetQueueDiscDeadlineTestCase : public TestCase
         g_expiredDropPriority = 255;
         g_expiredDropCount = 0;
 
+        g_classDequeuedPriority = 255;
+        g_classDequeuedSojournTime = Time::Min();
+        g_classDequeuedCount = 0;
+
         queueDisc->TraceConnectWithoutContext(
             "ExpiredDrop",
             MakeCallback(&ExpiredDropCallback));
+
+        queueDisc->TraceConnectWithoutContext(
+            "ClassDequeued",
+            MakeCallback(&ClassDequeuedCallback));
 
         Address address;
 
@@ -527,6 +547,61 @@ class FutureNetQueueDiscDeadlineTestCase : public TestCase
             g_expiredDropPriority,
             0,
             "ExpiredDrop priority should be zero");
+
+        g_classDequeuedPriority = 255;
+        g_classDequeuedSojournTime = Time::Min();
+        g_classDequeuedCount = 0;
+
+        Ptr<FutureNetQueueDisc> classDequeuedQueueDisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        classDequeuedQueueDisc->SetAttribute(
+            "SchedulingMode",
+            UintegerValue(0));
+
+        classDequeuedQueueDisc->Initialize();
+
+        classDequeuedQueueDisc->TraceConnectWithoutContext(
+            "ClassDequeued",
+            MakeCallback(&ClassDequeuedCallback));
+
+        Ptr<Packet> classDequeuedPacket = Create<Packet>();
+
+        FutureNetTrafficTag classDequeuedTag;
+        classDequeuedTag.SetPriority(0);
+        classDequeuedTag.SetFlowId(1);
+        classDequeuedPacket->AddPacketTag(classDequeuedTag);
+
+        Ptr<QueueDiscItem> classDequeuedItem = Create<FutureNetQueueDiscTestItem>(
+                                                            classDequeuedPacket,
+                                                            Address(),
+                                                            0);
+
+        classDequeuedQueueDisc->Enqueue(classDequeuedItem);
+
+        Simulator::Schedule(
+            MilliSeconds(5),
+            [classDequeuedQueueDisc]()
+            {
+                classDequeuedQueueDisc->Dequeue();
+            });
+
+        Simulator::Run();
+
+        NS_TEST_ASSERT_MSG_EQ(
+            g_classDequeuedCount,
+            1,
+            "ClassDequeued trace should fire once");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            g_classDequeuedPriority,
+            0,
+            "ClassDequeued priority should be zero");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            g_classDequeuedSojournTime,
+            MilliSeconds(5),
+            "ClassDequeued sojourn time should be 5 ms");
 
         Simulator::Destroy();
     }
