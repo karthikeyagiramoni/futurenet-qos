@@ -589,6 +589,9 @@ class FutureNetQueueDiscTestSuite : public TestSuite
 
         AddTestCase(new FutureNetQueueDiscDeadlineTestCase,
                     TestCase::Duration::QUICK);
+        
+        AddTestCase(new FutureNetQueueDiscExpiredTransmitTestCase,
+            TestCase::Duration::QUICK);
     }
 
 };
