@@ -12,7 +12,9 @@
 #include "ns3/enum.h"
 #include "ns3/uinteger.h"
 #include "ns3/simulator.h"
+#include "ns3/string.h"
 #include<vector>
+#include <sstream>
 
 namespace ns3
 {
@@ -25,6 +27,8 @@ FutureNetQueueDisc::FutureNetQueueDisc()
       m_defaultPriority(4),
       m_queueLimit(100),
       m_schedulingMode(0),
+      m_wrrCurrentClass(0),
+      m_wrrPacketsServed(0),
       m_defaultDeadline(Time::Min()),
       m_expiredPacketPolicy(0),
       m_enableDeadlineTracing(true),
@@ -61,10 +65,15 @@ FutureNetQueueDisc::GetTypeId()
                               &FutureNetQueueDisc::m_queueLimit),
                           MakeUintegerChecker<uint32_t>(1, 100000))
             .AddAttribute("SchedulingMode",
-                          "Queue scheduling mode: 0=StrictPriority, 1=EDF, 2=Hybrid.",
-                          UintegerValue(0),
-                          MakeUintegerAccessor(&FutureNetQueueDisc::m_schedulingMode),
-                          MakeUintegerChecker<uint32_t>(0, 2))
+                            "Scheduling algorithm: 0=StrictPriority, 1=EDF, 2=Hybrid, 3=WeightedRoundRobin.",
+                            UintegerValue(0),
+                            MakeUintegerAccessor(&FutureNetQueueDisc::m_schedulingMode),
+                            MakeUintegerChecker<uint32_t>(0, 3))
+            .AddAttribute("WrrWeights",
+                            "Weighted Round Robin weights for each priority class.",
+                            StringValue("4,3,2,1"),
+                            MakeStringAccessor(&FutureNetQueueDisc::m_wrrWeights),
+                            MakeStringChecker())
             .AddAttribute("ExpiredPacketPolicy",
                           "Expired packet policy: 0=Drop, 1=Transmit.",
                           UintegerValue(0),
@@ -114,32 +123,69 @@ FutureNetQueueDisc::CheckConfig()
     return true;
 }
 
+std::vector<uint32_t>
+FutureNetQueueDisc::GetWrrWeights() const
+{
+    std::vector<uint32_t> weights;
+
+    std::stringstream ss(m_wrrWeights);
+    std::string value;
+
+    while (std::getline(ss, value, ','))
+    {
+        uint32_t weight = std::stoul(value);
+
+        if (weight == 0)
+        {
+            weight = 1;
+        }
+
+        weights.push_back(weight);
+    }
+
+    // Fill missing classes with weight 1.
+    while (weights.size() < m_numPriorityClasses)
+    {
+        weights.push_back(1);
+    }
+
+    // Ignore extra weights.
+    if (weights.size() > m_numPriorityClasses)
+    {
+        weights.resize(m_numPriorityClasses);
+    }
+
+    return weights;
+}
+
 void
 FutureNetQueueDisc::InitializeParams()
 {
     if (m_schedulingMode == 1)
     {
-        // EDF uses one independent deadline-ordered queue
-        Ptr<FutureNetEdfQueue> queue = CreateObject<FutureNetEdfQueue>();
-
-        queue->SetMaxSize(
-            QueueSize(QueueSizeUnit::PACKETS, m_queueLimit));
-
+        auto queue = CreateObject<FutureNetEdfQueue>();
+        queue->SetMaxSize(QueueSize(QueueSizeUnit::PACKETS, m_queueLimit));
         AddInternalQueue(queue);
-
         return;
     }
 
-    // Existing strict-priority implementation
     for (uint32_t i = 0; i < m_numPriorityClasses; ++i)
     {
-        Ptr<DropTailQueue<QueueDiscItem>> queue =
-            CreateObject<DropTailQueue<QueueDiscItem>>();
+        if (m_schedulingMode == 2)
+        {
+            auto queue = CreateObject<FutureNetEdfQueue>();
+            queue->SetMaxSize(QueueSize(QueueSizeUnit::PACKETS, m_queueLimit));
+            AddInternalQueue(queue);
+        }
+        else
+        {
+            auto queue =
+                CreateObjectWithAttributes<DropTailQueue<QueueDiscItem>>(
+                    "MaxSize",
+                    QueueSizeValue(QueueSize(QueueSizeUnit::PACKETS, m_queueLimit)));
 
-        queue->SetMaxSize(
-            QueueSize(QueueSizeUnit::PACKETS, m_queueLimit));
-
-        AddInternalQueue(queue);
+            AddInternalQueue(queue);
+        }
     }
 }
 
@@ -341,6 +387,45 @@ FutureNetQueueDisc::DoDequeue()
 {
     NS_LOG_FUNCTION(this);
 
+    // Weighted Round Robin mode
+    if (m_schedulingMode == 3)
+    {
+        std::vector<uint32_t> weights = GetWrrWeights();
+
+        for (uint32_t attempts = 0; attempts < m_numPriorityClasses; ++attempts)
+        {
+            uint32_t priority = m_wrrCurrentClass;
+
+            Ptr<InternalQueue> queue = GetInternalQueue(priority);
+
+            if (!queue->IsEmpty())
+            {
+                Ptr<QueueDiscItem> item = queue->Dequeue();
+
+                TraceClassDequeued(item);
+
+                m_wrrPacketsServed++;
+
+                // Move to the next class after its weight is exhausted.
+                if (m_wrrPacketsServed >= weights[priority])
+                {
+                    m_wrrPacketsServed = 0;
+                    m_wrrCurrentClass =
+                        (m_wrrCurrentClass + 1) % m_numPriorityClasses;
+                }
+
+                return item;
+            }
+
+            // Current class is empty, skip to the next class.
+            m_wrrPacketsServed = 0;
+            m_wrrCurrentClass =
+                (m_wrrCurrentClass + 1) % m_numPriorityClasses;
+        }
+
+        return nullptr;
+    }
+
     // EDF mode
     if (m_schedulingMode == 1)
     {
@@ -363,76 +448,24 @@ FutureNetQueueDisc::DoDequeue()
     // Hybrid mode
     if (m_schedulingMode == 2)
     {
-        // Find the highest-priority non-empty queue.
+        // Strict priority between classes,
+        // EDF within the selected priority class.
         for (uint32_t i = 0; i < m_numPriorityClasses; ++i)
         {
             Ptr<InternalQueue> queue = GetInternalQueue(i);
 
-            if (queue->IsEmpty())
-            {
-                continue;
-            }
-
-            // Temporarily remove all packets from this priority queue.
-            std::vector<Ptr<QueueDiscItem>> items;
-
             while (!queue->IsEmpty())
             {
-            items.push_back(queue->Dequeue());
-            }
+                Ptr<QueueDiscItem> item = queue->Dequeue();
 
-            // Remove expired packets and keep valid packets.
-            std::vector<Ptr<QueueDiscItem>> validItems;
+                item = CheckDeadline(item);
 
-            for (auto item : items)
-            {
-                Ptr<QueueDiscItem> checkedItem = CheckDeadline(item);
-
-                if (checkedItem != nullptr)
+                if (item != nullptr)
                 {
-                validItems.push_back(checkedItem);
+                    TraceClassDequeued(item);
+                    return item;
                 }
             }
-
-            // Put valid packets back if none remain to select.
-            if (validItems.empty())
-            {
-                continue;
-            }
-
-            // Find the packet with the earliest deadline.
-            uint32_t selectedIndex = 0;
-            Time earliestDeadline = Time::Max();
-
-            for (uint32_t j = 0; j < validItems.size(); ++j)
-            {
-                DeadlineTag deadlineTag;
-                Time deadline = Time::Max();
-
-                if (validItems[j]->GetPacket()->PeekPacketTag(deadlineTag))
-                {
-                    deadline = deadlineTag.GetDeadline();
-                }
-
-                if (deadline < earliestDeadline)
-                {
-                    earliestDeadline = deadline;
-                    selectedIndex = j;
-                }
-            }
-
-            // Put all non-selected packets back.
-            for (uint32_t j = 0; j < validItems.size(); ++j)
-            {
-                if (j != selectedIndex)
-                {
-                    queue->Enqueue(validItems[j]);
-                }
-            }
-
-            // Return the earliest-deadline packet.
-            TraceClassDequeued(validItems[selectedIndex]);
-            return validItems[selectedIndex];
         }
 
         return nullptr;
@@ -466,6 +499,27 @@ Ptr<const QueueDiscItem>
 FutureNetQueueDisc::DoPeek()
 {
     NS_LOG_FUNCTION(this);
+
+    // Weighted Round Robin mode
+    if (m_schedulingMode == 3)
+    {
+        for (uint32_t attempts = 0;
+            attempts < m_numPriorityClasses;
+            ++attempts)
+        {
+            uint32_t priority = m_wrrCurrentClass;
+
+            if (!GetInternalQueue(priority)->IsEmpty())
+            {
+                return GetInternalQueue(priority)->Peek();
+            }
+
+            m_wrrCurrentClass =
+                (m_wrrCurrentClass + 1) % m_numPriorityClasses;
+        }
+
+        return nullptr;
+    }
 
     // EDF mode uses a single internal EDF queue.
     if (m_schedulingMode == 1)

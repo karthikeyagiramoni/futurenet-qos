@@ -6,6 +6,8 @@
 #include "ns3/traced-callback.h"
 
 #include <unordered_map>
+#include <string>
+#include <vector>
 
 namespace ns3
 {
@@ -25,6 +27,8 @@ private:
     void InitializeParams() override;
 
     Ptr<QueueDiscItem> CheckDeadline(Ptr<QueueDiscItem> item);
+    std::vector<uint32_t> GetWrrWeights() const;
+
     void TraceClassDequeued(Ptr<QueueDiscItem> item);
 
     bool DoEnqueue(Ptr<QueueDiscItem> item) override;
@@ -37,6 +41,10 @@ private:
     uint8_t m_defaultPriority;
     uint32_t m_queueLimit;
     uint32_t m_schedulingMode;
+    std::string m_wrrWeights;
+
+    uint32_t m_wrrCurrentClass;
+    uint32_t m_wrrPacketsServed;
 
     // Deadline handling
     Time m_defaultDeadline;

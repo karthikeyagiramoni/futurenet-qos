@@ -5,6 +5,8 @@
 #include "ns3/test.h"
 #include "ns3/simulator.h"
 #include "ns3/uinteger.h"
+#include "ns3/string.h"
+#include <vector>
 
 using namespace ns3;
 
@@ -892,6 +894,75 @@ class FutureNetQueueDiscExpiredTransmitTestCase : public TestCase
     }
 };
 
+class FutureNetQueueDiscWrrTestCase : public TestCase
+{
+public:
+    FutureNetQueueDiscWrrTestCase()
+        : TestCase("Weighted Round Robin serves packets according to class weights")
+    {
+    }
+
+private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(3));
+        qdisc->SetAttribute("NumPriorityClasses", UintegerValue(4));
+        qdisc->SetAttribute("WrrWeights", StringValue("3,2,1,1"));
+
+        qdisc->Initialize();
+
+        // Add enough packets to every class to keep all queues non-empty.
+        for (uint8_t priority = 0; priority < 4; ++priority)
+        {
+            for (uint32_t i = 0; i < 10; ++i)
+            {
+                Ptr<QueueDiscItem> item =
+                        Create<FutureNetQueueDiscTestItem>(
+                            Create<Packet>(100),
+                            Address(),
+                            priority);
+
+                NS_TEST_ASSERT_MSG_EQ(
+                    qdisc->Enqueue(item),
+                    true,
+                    "Packet enqueue should succeed");
+            }
+        }
+
+        // Expected WRR sequence for weights 3,2,1,1.
+        const std::vector<uint8_t> expected = {
+            0, 0, 0, 1, 1, 2, 3,
+            0, 0, 0, 1, 1, 2, 3
+        };
+
+        for (uint32_t i = 0; i < expected.size(); ++i)
+        {
+            Ptr<const QueueDiscItem> item = qdisc->Dequeue();
+
+            NS_TEST_ASSERT_MSG_NE(
+                item,
+                nullptr,
+                "Dequeue should return a packet");
+
+            FutureNetTrafficTag tag;
+            NS_TEST_ASSERT_MSG_EQ(
+                item->GetPacket()->PeekPacketTag(tag),
+                true,
+                "Dequeued packet should contain a traffic tag");
+
+            NS_TEST_ASSERT_MSG_EQ(
+                tag.GetPriority(),
+                expected[i],
+                "Dequeued priority should follow WRR weights");
+        }
+
+        Simulator::Destroy();
+    }
+};
+
 /**
  * @brief FutureNetQueueDisc test suite.
  */
@@ -917,7 +988,10 @@ class FutureNetQueueDiscTestSuite : public TestSuite
                     TestCase::Duration::QUICK);
         
         AddTestCase(new FutureNetQueueDiscExpiredTransmitTestCase,
-            TestCase::Duration::QUICK);
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscWrrTestCase(),
+                    TestSuite::Duration::QUICK);
     }
 
 };
