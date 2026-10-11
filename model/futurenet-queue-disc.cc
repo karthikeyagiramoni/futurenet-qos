@@ -500,22 +500,21 @@ FutureNetQueueDisc::DoPeek()
 {
     NS_LOG_FUNCTION(this);
 
-    // Weighted Round Robin mode
+    // Weighted Round Robin mode.
+    // Peek must not modify the scheduler's state.
     if (m_schedulingMode == 3)
     {
         for (uint32_t attempts = 0;
             attempts < m_numPriorityClasses;
             ++attempts)
         {
-            uint32_t priority = m_wrrCurrentClass;
+            uint32_t priority =
+                (m_wrrCurrentClass + attempts) % m_numPriorityClasses;
 
             if (!GetInternalQueue(priority)->IsEmpty())
             {
                 return GetInternalQueue(priority)->Peek();
             }
-
-            m_wrrCurrentClass =
-                (m_wrrCurrentClass + 1) % m_numPriorityClasses;
         }
 
         return nullptr;
