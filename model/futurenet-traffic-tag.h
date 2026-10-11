@@ -3,6 +3,9 @@
 
 #include "ns3/tag.h"
 
+#include <cstdint>
+#include <ostream>
+
 namespace ns3
 {
 

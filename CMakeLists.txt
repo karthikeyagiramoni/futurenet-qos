@@ -21,5 +21,8 @@ build_lib(
   LIBRARIES_TO_LINK
     ${libcore}
     ${libnetwork}
+    ${libtraffic-control}
 )
+
+
 

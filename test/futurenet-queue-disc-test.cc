@@ -165,6 +165,101 @@ class FutureNetQueueDiscTestCase : public TestCase
     }
 };
 
+
+/**
+ * @brief Test that QueueLimit applies globally across priority queues.
+ */
+class FutureNetQueueDiscGlobalQueueLimitTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscGlobalQueueLimitTestCase()
+        : TestCase("Test global queue limit across priority classes")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> queueDisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        queueDisc->SetAttribute("QueueLimit", UintegerValue(3));
+        queueDisc->SetAttribute("NumPriorityClasses", UintegerValue(4));
+        queueDisc->SetAttribute("SchedulingMode", UintegerValue(0));
+
+        queueDisc->Initialize();
+
+        // Enqueue packets into three different priority classes.
+        for (uint8_t priority = 0; priority < 3; ++priority)
+        {
+            Ptr<QueueDiscItem> item =
+                Create<FutureNetQueueDiscTestItem>(
+                    Create<Packet>(100),
+                    Address(),
+                    priority);
+
+            NS_TEST_ASSERT_MSG_EQ(
+                queueDisc->Enqueue(item),
+                true,
+                "Packet should be accepted while below global QueueLimit");
+        }
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->GetNPackets(),
+            3,
+            "Queue should contain three packets across priority classes");
+
+        // The global limit is reached, so another packet must be rejected.
+        Ptr<QueueDiscItem> overflowItem =
+            Create<FutureNetQueueDiscTestItem>(
+                Create<Packet>(100),
+                Address(),
+                3);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->Enqueue(overflowItem),
+            false,
+            "Fourth packet should be rejected at the global queue limit");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->GetNPackets(),
+            3,
+            "Rejected packet must not increase the total queue size");
+
+        // Dequeue one packet to free a slot.
+        Ptr<QueueDiscItem> dequeuedItem = queueDisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            dequeuedItem,
+            nullptr,
+            "Dequeue should return a packet");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->GetNPackets(),
+            2,
+            "Queue should contain two packets after dequeue");
+
+        // A new packet should now be accepted.
+        Ptr<QueueDiscItem> replacementItem =
+            Create<FutureNetQueueDiscTestItem>(
+                Create<Packet>(100),
+                Address(),
+                3);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->Enqueue(replacementItem),
+            true,
+            "Packet should be accepted after a queue slot is freed");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->GetNPackets(),
+            3,
+            "Queue should return to the global limit");
+
+        Simulator::Destroy();
+    }
+};
+
 /**
  * @brief Test strict priority scheduling.
  */
@@ -442,6 +537,191 @@ class FutureNetQueueDiscEdfTestCase : public TestCase
         NS_TEST_ASSERT_MSG_EQ(peekQueueDisc->GetNPackets(),
                             2,
                             "Peek should not remove the packet");
+    }
+};
+
+
+/**
+ * @brief Test FIFO ordering for packets with equal EDF deadlines.
+ */
+class FutureNetQueueDiscEdfEqualDeadlineTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscEdfEqualDeadlineTestCase()
+        : TestCase("EDF preserves FIFO order for equal deadlines")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> queueDisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        queueDisc->SetAttribute("SchedulingMode", UintegerValue(1));
+        queueDisc->Initialize();
+
+        // Both packets have exactly the same absolute deadline.
+        Ptr<Packet> packet1 = Create<Packet>(100);
+        Ptr<Packet> packet2 = Create<Packet>(100);
+
+        DeadlineTag deadline1;
+        deadline1.SetDeadline(MilliSeconds(20));
+        packet1->AddPacketTag(deadline1);
+
+        DeadlineTag deadline2;
+        deadline2.SetDeadline(MilliSeconds(20));
+        packet2->AddPacketTag(deadline2);
+
+        Ptr<QueueDiscItem> item1 =
+            Create<FutureNetQueueDiscTestItem>(
+                packet1, Address(), 1);
+
+        Ptr<QueueDiscItem> item2 =
+            Create<FutureNetQueueDiscTestItem>(
+                packet2, Address(), 1);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->Enqueue(item1),
+            true,
+            "First packet should be enqueued");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->Enqueue(item2),
+            true,
+            "Second packet should be enqueued");
+
+        Ptr<const QueueDiscItem> peeked = queueDisc->Peek();
+
+        NS_TEST_ASSERT_MSG_NE(
+            peeked,
+            nullptr,
+            "Peek should return the first packet");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            peeked->GetPacket()->GetUid(),
+            packet1->GetUid(),
+            "First inserted packet should be at the EDF queue head");
+
+        Ptr<QueueDiscItem> dequeued1 = queueDisc->Dequeue();
+        Ptr<QueueDiscItem> dequeued2 = queueDisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            dequeued1,
+            nullptr,
+            "First dequeue should return a packet");
+
+        NS_TEST_ASSERT_MSG_NE(
+            dequeued2,
+            nullptr,
+            "Second dequeue should return a packet");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            dequeued1->GetPacket()->GetUid(),
+            packet1->GetUid(),
+            "Equal-deadline packets should preserve FIFO order");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            dequeued2->GetPacket()->GetUid(),
+            packet2->GetUid(),
+            "Second inserted packet should be dequeued second");
+
+        Simulator::Destroy();
+    }
+};
+
+
+/**
+ * @brief Test EDF ordering when one packet has no deadline metadata.
+ */
+class FutureNetQueueDiscEdfMissingDeadlineTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscEdfMissingDeadlineTestCase()
+        : TestCase("EDF prioritizes valid deadlines over missing deadlines")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> queueDisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        queueDisc->SetAttribute("SchedulingMode", UintegerValue(1));
+
+        // Keep the missing-deadline packet without an assigned default
+        // deadline, so the EDF queue treats it as Time::Max().
+        queueDisc->SetAttribute(
+            "DefaultDeadline",
+            TimeValue(Time::Min()));
+
+        queueDisc->Initialize();
+
+        // Enqueue the packet without a DeadlineTag first.
+        Ptr<Packet> noDeadlinePacket = Create<Packet>(100);
+
+        Ptr<QueueDiscItem> noDeadlineItem =
+            Create<FutureNetQueueDiscNoTagTestItem>(
+                noDeadlinePacket, Address());
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->Enqueue(noDeadlineItem),
+            true,
+            "Packet without deadline metadata should be enqueued");
+
+        // This packet has a finite deadline and should be served first.
+        Ptr<Packet> deadlinePacket = Create<Packet>(100);
+
+        DeadlineTag deadline;
+        deadline.SetDeadline(MilliSeconds(20));
+        deadlinePacket->AddPacketTag(deadline);
+
+        Ptr<QueueDiscItem> deadlineItem =
+            Create<FutureNetQueueDiscTestItem>(
+                deadlinePacket, Address(), 1);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->Enqueue(deadlineItem),
+            true,
+            "Packet with a deadline should be enqueued");
+
+        Ptr<const QueueDiscItem> peeked = queueDisc->Peek();
+
+        NS_TEST_ASSERT_MSG_NE(
+            peeked,
+            nullptr,
+            "Peek should return a packet");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            peeked->GetPacket()->GetUid(),
+            deadlinePacket->GetUid(),
+            "Packet with a finite deadline should be first");
+
+        Ptr<QueueDiscItem> dequeued1 = queueDisc->Dequeue();
+        Ptr<QueueDiscItem> dequeued2 = queueDisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            dequeued1,
+            nullptr,
+            "First dequeue should return a packet");
+
+        NS_TEST_ASSERT_MSG_NE(
+            dequeued2,
+            nullptr,
+            "Second dequeue should return a packet");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            dequeued1->GetPacket()->GetUid(),
+            deadlinePacket->GetUid(),
+            "Finite-deadline packet should be dequeued first");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            dequeued2->GetPacket()->GetUid(),
+            noDeadlinePacket->GetUid(),
+            "Packet without deadline metadata should be dequeued last");
+
+        Simulator::Destroy();
     }
 };
 
@@ -992,6 +1272,15 @@ class FutureNetQueueDiscTestSuite : public TestSuite
 
         AddTestCase(new FutureNetQueueDiscWrrTestCase(),
                     TestSuite::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscGlobalQueueLimitTestCase,
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscEdfEqualDeadlineTestCase,
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscEdfMissingDeadlineTestCase,
+                    TestCase::Duration::QUICK);
     }
 
 };

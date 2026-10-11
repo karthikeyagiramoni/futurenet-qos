@@ -13,8 +13,11 @@
 #include "ns3/uinteger.h"
 #include "ns3/simulator.h"
 #include "ns3/string.h"
-#include<vector>
+#include <vector>
 #include <sstream>
+#include <cstdint>
+#include <limits>
+#include <string>
 
 namespace ns3
 {
@@ -117,9 +120,35 @@ FutureNetQueueDisc::GetTypeId()
 }
 
 
+
 bool
 FutureNetQueueDisc::CheckConfig()
 {
+    NS_ABORT_MSG_IF(
+        m_numPriorityClasses < 2 || m_numPriorityClasses > 8,
+        "NumPriorityClasses must be between 2 and 8.");
+
+    NS_ABORT_MSG_IF(
+        m_schedulingMode > 3,
+        "SchedulingMode must be 0, 1, 2, or 3.");
+
+    NS_ABORT_MSG_IF(
+        m_expiredPacketPolicy > 1,
+        "ExpiredPacketPolicy must be 0 (Drop) or 1 (Transmit).");
+
+    NS_ABORT_MSG_IF(
+        m_deadlineCheckInterval < Seconds(0),
+        "DeadlineCheckInterval cannot be negative.");
+
+    // Validate WRR configuration only when WRR is selected.
+    if (m_schedulingMode == 3)
+    {
+        const std::vector<uint32_t> weights = GetWrrWeights();
+        NS_ABORT_MSG_IF(
+            weights.size() != m_numPriorityClasses,
+            "WRR weights do not match the number of priority classes.");
+    }
+
     return true;
 }
 
@@ -127,33 +156,41 @@ std::vector<uint32_t>
 FutureNetQueueDisc::GetWrrWeights() const
 {
     std::vector<uint32_t> weights;
+    std::stringstream input(m_wrrWeights);
+    std::string token;
 
-    std::stringstream ss(m_wrrWeights);
-    std::string value;
+    NS_ABORT_MSG_IF(m_wrrWeights.empty() || m_wrrWeights.back() == ',',
+                "WrrWeights must not be empty or end with a comma");
 
-    while (std::getline(ss, value, ','))
+    while (std::getline(input, token, ','))
     {
-        uint32_t weight = std::stoul(value);
+        std::stringstream valueStream(token);
+        uint64_t weight = 0;
 
-        if (weight == 0)
-        {
-            weight = 1;
-        }
+        valueStream >> std::ws;
 
-        weights.push_back(weight);
+        NS_ABORT_MSG_IF(token.empty() ||
+                            !(valueStream >> weight),
+                        "Invalid WRR weight: '" << token << "'");
+
+        valueStream >> std::ws;
+
+        NS_ABORT_MSG_IF(!valueStream.eof(),
+                        "Unexpected characters in WRR weight: '" << token << "'");
+
+        NS_ABORT_MSG_IF(weight == 0 ||
+                            weight > std::numeric_limits<uint32_t>::max(),
+                        "WRR weights must be in the range 1 to "
+                            << std::numeric_limits<uint32_t>::max());
+
+        weights.push_back(static_cast<uint32_t>(weight));
     }
 
-    // Fill missing classes with weight 1.
-    while (weights.size() < m_numPriorityClasses)
-    {
-        weights.push_back(1);
-    }
-
-    // Ignore extra weights.
-    if (weights.size() > m_numPriorityClasses)
-    {
-        weights.resize(m_numPriorityClasses);
-    }
+    NS_ABORT_MSG_IF(weights.size() != m_numPriorityClasses,
+                    "WrrWeights must contain exactly "
+                        << m_numPriorityClasses
+                        << " comma-separated values; got "
+                        << weights.size());
 
     return weights;
 }
@@ -189,55 +226,8 @@ FutureNetQueueDisc::InitializeParams()
     }
 }
 
-Ptr<QueueDiscItem>
-FutureNetQueueDisc::DequeueEdf()
-{
-    Ptr<InternalQueue> selectedQueue = nullptr;
-    Time earliestDeadline = Time::Max();
 
 
-    for (uint32_t i = 0; i < m_numPriorityClasses; ++i)
-    {
-        Ptr<InternalQueue> queue = GetInternalQueue(i);
-
-        if (queue->IsEmpty())
-        {
-            continue;
-        }
-
-        Ptr<const QueueDiscItem> item = queue->Peek();
-
-        DeadlineTag deadlineTag;
-
-        if (item->GetPacket()->PeekPacketTag(deadlineTag))
-        {
-            Time deadline = deadlineTag.GetDeadline();
-
-            if (selectedQueue == nullptr || deadline < earliestDeadline)
-            {
-                selectedQueue = queue;
-                earliestDeadline = deadline;
-            }
-        }
-    }
-
-    if (selectedQueue != nullptr)
-    {
-        return selectedQueue->Dequeue();
-    }
-
-    // No packet has a deadline.
-    // Fall back to strict priority.
-    for (uint32_t i = 0; i < m_numPriorityClasses; ++i)
-    {
-        if (!GetInternalQueue(i)->IsEmpty())
-        {
-            return GetInternalQueue(i)->Dequeue();
-        }
-    }
-
-    return nullptr;
-}
 
 Ptr<QueueDiscItem>
 FutureNetQueueDisc::CheckDeadline(Ptr<QueueDiscItem> item)
@@ -247,35 +237,27 @@ FutureNetQueueDisc::CheckDeadline(Ptr<QueueDiscItem> item)
         return nullptr;
     }
 
-    Time now = Simulator::Now();
-
-    // A zero interval means check every dequeue.
-    if (m_deadlineCheckInterval > Seconds(0) &&
-        now - m_lastDeadlineCheck < m_deadlineCheckInterval)
-    {
-        return item;
-    }
-
-    m_lastDeadlineCheck = now;
+    // Always perform the final deadline check before transmission.
+    const Time now = Simulator::Now();
 
     DeadlineTag deadlineTag;
 
-    // No deadline means the packet cannot miss a deadline.
+    // Packets without a deadline do not miss one.
     if (!item->GetPacket()->PeekPacketTag(deadlineTag))
     {
         return item;
     }
 
-    Time deadline = deadlineTag.GetDeadline();
+    const Time deadline = deadlineTag.GetDeadline();
 
-    // Packet has not expired.
+    // A packet is expired only when the current time is past its deadline.
     if (now <= deadline)
     {
         return item;
     }
 
     // Deadline missed.
-    m_deadlineMissCount++;
+    ++m_deadlineMissCount;
 
     FutureNetTrafficTag trafficTag;
     uint8_t priority = m_defaultPriority;
@@ -287,16 +269,14 @@ FutureNetQueueDisc::CheckDeadline(Ptr<QueueDiscItem> item)
         flowId = trafficTag.GetFlowId();
     }
 
-    Time lateness = now - deadline;
+    const Time lateness = now - deadline;
 
     if (m_enableDeadlineTracing)
     {
         m_deadlineMissTrace(flowId, priority, lateness);
     }
 
-    // ExpiredPacketPolicy:
-    // 0 = Drop
-    // 1 = Transmit
+    // ExpiredPacketPolicy: 0 = Drop, 1 = Transmit.
     if (m_expiredPacketPolicy == 0)
     {
         if (m_enableDeadlineTracing)
@@ -304,9 +284,13 @@ FutureNetQueueDisc::CheckDeadline(Ptr<QueueDiscItem> item)
             m_expiredDropTrace(flowId, priority);
         }
 
+        // Remove the packet's enqueue-time entry to avoid a bookkeeping leak.
+        m_enqueueTimes.erase(item->GetPacket()->GetUid());
+
         return nullptr;
     }
 
+    // Transmit even though the deadline was missed.
     return item;
 }
 
@@ -345,25 +329,37 @@ FutureNetQueueDisc::TraceClassDequeued(Ptr<QueueDiscItem> item)
     m_classDequeuedTrace(priority, sojournTime);
 }
 
+
 bool
 FutureNetQueueDisc::DoEnqueue(Ptr<QueueDiscItem> item)
 {
-    m_enqueueTimes[item->GetPacket()->GetUid()] = Simulator::Now();
-    if (m_schedulingMode == 1)
-    {
-        return GetInternalQueue(0)->Enqueue(item);
-    }
     NS_LOG_FUNCTION(this << item);
 
-    uint8_t priority = m_defaultPriority;
-
-    FutureNetTrafficTag tag;
-
-    if (item->GetPacket()->PeekPacketTag(tag))
+    if (item == nullptr)
     {
-        priority = tag.GetPriority();
+        return false;
     }
 
+    // Count packets across all internal queues.
+    // EDF has one queue; other modes have one queue per priority class.
+    const uint32_t numQueues =
+        (m_schedulingMode == 1) ? 1 : m_numPriorityClasses;
+
+    uint32_t totalPackets = 0;
+
+    for (uint32_t i = 0; i < numQueues; ++i)
+    {
+        totalPackets += GetInternalQueue(i)->GetNPackets();
+    }
+
+    // Enforce a global queue limit.
+    if (totalPackets >= m_queueLimit)
+    {
+        DropBeforeEnqueue(item, "Global queue limit exceeded");
+        return false;
+    }
+
+    // Apply the default deadline BEFORE branching into scheduling modes.
     DeadlineTag deadlineTag;
 
     if (!item->GetPacket()->PeekPacketTag(deadlineTag) &&
@@ -373,14 +369,44 @@ FutureNetQueueDisc::DoEnqueue(Ptr<QueueDiscItem> item)
         item->GetPacket()->AddPacketTag(deadlineTag);
     }
 
-    if (priority >= m_numPriorityClasses)
+    // Select the destination queue.
+    uint32_t queueIndex = 0;
+
+    if (m_schedulingMode != 1)
     {
-        priority = m_numPriorityClasses - 1;
+        uint8_t priority = m_defaultPriority;
+        FutureNetTrafficTag trafficTag;
+
+        if (item->GetPacket()->PeekPacketTag(trafficTag))
+        {
+            priority = trafficTag.GetPriority();
+        }
+
+        // Map out-of-range priorities to the lowest configured class.
+        if (priority >= m_numPriorityClasses)
+        {
+            priority = m_numPriorityClasses - 1;
+        }
+
+        queueIndex = priority;
     }
 
-    return GetInternalQueue(priority)->Enqueue(item);
-}
+    // Record enqueue time only after the queue accepts the packet.
+    const uint64_t packetUid = item->GetPacket()->GetUid();
 
+    const bool accepted = GetInternalQueue(queueIndex)->Enqueue(item);
+
+    if (accepted)
+    {
+        m_enqueueTimes[packetUid] = Simulator::Now();
+    }
+    else
+    {
+        m_enqueueTimes.erase(packetUid);
+    }
+
+    return accepted;
+}
 
 Ptr<QueueDiscItem>
 FutureNetQueueDisc::DoDequeue()
@@ -392,35 +418,46 @@ FutureNetQueueDisc::DoDequeue()
     {
         std::vector<uint32_t> weights = GetWrrWeights();
 
-        for (uint32_t attempts = 0; attempts < m_numPriorityClasses; ++attempts)
+        for (uint32_t attempts = 0;
+             attempts < m_numPriorityClasses;)
         {
             uint32_t priority = m_wrrCurrentClass;
-
             Ptr<InternalQueue> queue = GetInternalQueue(priority);
 
-            if (!queue->IsEmpty())
+            if (queue->IsEmpty())
             {
-                Ptr<QueueDiscItem> item = queue->Dequeue();
+                // Skip empty classes.
+                m_wrrPacketsServed = 0;
+                m_wrrCurrentClass =
+                    (m_wrrCurrentClass + 1) % m_numPriorityClasses;
+                ++attempts;
+                continue;
+            }
 
+            Ptr<QueueDiscItem> item = queue->Dequeue();
+
+            // Update WRR state for every dequeued packet,
+            // including expired packets that are dropped.
+            ++m_wrrPacketsServed;
+
+            if (m_wrrPacketsServed >= weights[priority])
+            {
+                m_wrrPacketsServed = 0;
+                m_wrrCurrentClass =
+                    (m_wrrCurrentClass + 1) % m_numPriorityClasses;
+                ++attempts;
+            }
+
+            // Check the packet's deadline before transmission.
+            item = CheckDeadline(item);
+
+            if (item != nullptr)
+            {
                 TraceClassDequeued(item);
-
-                m_wrrPacketsServed++;
-
-                // Move to the next class after its weight is exhausted.
-                if (m_wrrPacketsServed >= weights[priority])
-                {
-                    m_wrrPacketsServed = 0;
-                    m_wrrCurrentClass =
-                        (m_wrrCurrentClass + 1) % m_numPriorityClasses;
-                }
-
                 return item;
             }
 
-            // Current class is empty, skip to the next class.
-            m_wrrPacketsServed = 0;
-            m_wrrCurrentClass =
-                (m_wrrCurrentClass + 1) % m_numPriorityClasses;
+            // The packet was dropped. Continue looking for another one.
         }
 
         return nullptr;

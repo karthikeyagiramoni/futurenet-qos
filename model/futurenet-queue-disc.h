@@ -4,6 +4,7 @@
 #include "ns3/queue-disc.h"
 
 #include "ns3/traced-callback.h"
+#include "ns3/nstime.h"
 
 #include <unordered_map>
 #include <string>
@@ -35,7 +36,6 @@ private:
     Ptr<QueueDiscItem> DoDequeue() override;
     Ptr<const QueueDiscItem> DoPeek() override;
 
-    Ptr<QueueDiscItem> DequeueEdf();
 
     uint32_t m_numPriorityClasses;
     uint8_t m_defaultPriority;

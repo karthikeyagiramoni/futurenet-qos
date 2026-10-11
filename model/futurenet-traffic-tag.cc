@@ -2,6 +2,10 @@
 
 #include "ns3/log.h"
 
+#include "ns3/fatal-error.h"
+
+#include <cmath>
+
 namespace ns3
 {
 
@@ -67,6 +71,8 @@ FutureNetTrafficTag::Print(std::ostream& os) const
 void
 FutureNetTrafficTag::SetPriority(uint8_t priority)
 {
+    NS_ABORT_MSG_IF(priority > 7,
+                    "Priority must be in the range 0-7");
     m_priority = priority;
 }
 
@@ -79,6 +85,10 @@ FutureNetTrafficTag::GetPriority() const
 void
 FutureNetTrafficTag::SetImportance(double importance)
 {
+    NS_ABORT_MSG_IF(!std::isfinite(importance) ||
+                        importance < 0.0 ||
+                        importance > 1.0,
+                    "Importance must be finite and in the range [0, 1]");
     m_importance = importance;
 }
 
