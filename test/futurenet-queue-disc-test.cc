@@ -1243,6 +1243,70 @@ private:
     }
 };
 
+
+class FutureNetQueueDiscWrrPeekTestCase : public TestCase
+{
+public:
+    FutureNetQueueDiscWrrPeekTestCase()
+        : TestCase("WRR Peek does not remove the next packet")
+    {
+    }
+
+private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(3));
+        qdisc->SetAttribute("NumPriorityClasses", UintegerValue(4));
+        qdisc->SetAttribute("WrrWeights", StringValue("3,2,1,1"));
+
+        qdisc->Initialize();
+
+        // Enqueue one packet in each class.
+        for (uint8_t priority = 0; priority < 4; ++priority)
+        {
+            Ptr<QueueDiscItem> item =
+                Create<FutureNetQueueDiscTestItem>(
+                    Create<Packet>(100),
+                    Address(),
+                    priority);
+
+            NS_TEST_ASSERT_MSG_EQ(
+                qdisc->Enqueue(item),
+                true,
+                "Packet enqueue should succeed");
+        }
+
+        Ptr<const QueueDiscItem> peeked = qdisc->Peek();
+
+        NS_TEST_ASSERT_MSG_NE(
+            peeked,
+            nullptr,
+            "Peek should return a packet");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetNPackets(),
+            4,
+            "Peek should not remove a packet");
+
+        Ptr<QueueDiscItem> dequeued = qdisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            dequeued,
+            nullptr,
+            "Dequeue should return a packet");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            peeked->GetPacket()->GetUid(),
+            dequeued->GetPacket()->GetUid(),
+            "Peek should predict the next dequeued packet");
+
+        Simulator::Destroy();
+    }
+};
+
 /**
  * @brief FutureNetQueueDisc test suite.
  */
@@ -1280,6 +1344,9 @@ class FutureNetQueueDiscTestSuite : public TestSuite
                     TestCase::Duration::QUICK);
 
         AddTestCase(new FutureNetQueueDiscEdfMissingDeadlineTestCase,
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscWrrPeekTestCase(),
                     TestCase::Duration::QUICK);
     }
 

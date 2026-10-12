@@ -538,9 +538,11 @@ FutureNetQueueDisc::DoPeek()
     NS_LOG_FUNCTION(this);
 
     // Weighted Round Robin mode.
-    // Peek must not modify the scheduler's state.
+    // Predict the next dequeue without modifying scheduler state.
     if (m_schedulingMode == 3)
     {
+        std::vector<uint32_t> weights = GetWrrWeights();
+
         for (uint32_t attempts = 0;
             attempts < m_numPriorityClasses;
             ++attempts)
@@ -548,9 +550,24 @@ FutureNetQueueDisc::DoPeek()
             uint32_t priority =
                 (m_wrrCurrentClass + attempts) % m_numPriorityClasses;
 
-            if (!GetInternalQueue(priority)->IsEmpty())
+            Ptr<InternalQueue> queue = GetInternalQueue(priority);
+
+            if (queue->IsEmpty())
             {
-                return GetInternalQueue(priority)->Peek();
+                continue;
+            }
+
+            // The current class still has service remaining this turn.
+            if (attempts == 0 &&
+                m_wrrPacketsServed < weights[priority])
+            {
+                return queue->Peek();
+            }
+
+            // Later non-empty classes are candidates after the current turn.
+            if (attempts > 0)
+            {
+                return queue->Peek();
             }
         }
 
