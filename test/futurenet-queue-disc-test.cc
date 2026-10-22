@@ -7,6 +7,9 @@
 #include "ns3/uinteger.h"
 #include "ns3/string.h"
 #include <vector>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <string>
 
 using namespace ns3;
 
@@ -1667,6 +1670,7 @@ private:
 };
 
 
+
 class FutureNetQueueDiscWrrPeekTestCase : public TestCase
 {
 public:
@@ -1702,17 +1706,29 @@ private:
                 "Packet enqueue should succeed");
         }
 
-        Ptr<const QueueDiscItem> peeked = qdisc->Peek();
+        // Repeated Peek calls must not change scheduler state.
+        Ptr<const QueueDiscItem> firstPeek = qdisc->Peek();
+        Ptr<const QueueDiscItem> secondPeek = qdisc->Peek();
 
         NS_TEST_ASSERT_MSG_NE(
-            peeked,
+            firstPeek,
             nullptr,
-            "Peek should return a packet");
+            "First Peek should return a packet");
+
+        NS_TEST_ASSERT_MSG_NE(
+            secondPeek,
+            nullptr,
+            "Second Peek should return a packet");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            firstPeek->GetPacket()->GetUid(),
+            secondPeek->GetPacket()->GetUid(),
+            "Repeated Peek calls should return the same packet");
 
         NS_TEST_ASSERT_MSG_EQ(
             qdisc->GetNPackets(),
             4,
-            "Peek should not remove a packet");
+            "Repeated Peek calls should not remove packets");
 
         Ptr<QueueDiscItem> dequeued = qdisc->Dequeue();
 
@@ -1722,13 +1738,14 @@ private:
             "Dequeue should return a packet");
 
         NS_TEST_ASSERT_MSG_EQ(
-            peeked->GetPacket()->GetUid(),
+            firstPeek->GetPacket()->GetUid(),
             dequeued->GetPacket()->GetUid(),
             "Peek should predict the next dequeued packet");
 
         Simulator::Destroy();
     }
 };
+
 
 class FutureNetQueueDiscWrrPeekAfterWeightTestCase : public TestCase
 {
@@ -2012,6 +2029,106 @@ class FutureNetQueueDiscWrrUnderfilledClassTestCase : public TestCase
 };
 
 
+class FutureNetQueueDiscWrrMidRoundRefillTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscWrrMidRoundRefillTestCase()
+        : TestCase("WRR serves a refilled class during an ongoing round")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(3));
+        qdisc->SetAttribute("NumPriorityClasses", UintegerValue(4));
+        qdisc->SetAttribute("WrrWeights", StringValue("3,2,1,1"));
+        qdisc->Initialize();
+
+        // Start with two packets in class 0 and no packets in class 1.
+        for (uint32_t i = 0; i < 2; ++i)
+        {
+            Ptr<QueueDiscItem> item =
+                Create<FutureNetQueueDiscTestItem>(
+                    Create<Packet>(100), Address(), 0);
+
+            NS_TEST_ASSERT_MSG_EQ(
+                qdisc->Enqueue(item),
+                true,
+                "Class 0 packet enqueue should succeed");
+        }
+
+        // First packet comes from class 0.
+        Ptr<QueueDiscItem> first = qdisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            first,
+            nullptr,
+            "First dequeue should return a packet");
+
+        FutureNetTrafficTag firstTag;
+        first->GetPacket()->PeekPacketTag(firstTag);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            firstTag.GetPriority(),
+            0,
+            "First packet should come from class 0");
+
+        // Refill class 1 before class 0 has used its full weight of 3.
+        Ptr<QueueDiscItem> refill =
+            Create<FutureNetQueueDiscTestItem>(
+                Create<Packet>(100), Address(), 1);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Enqueue(refill),
+            true,
+            "Class 1 refill should succeed");
+
+        // Class 0 still has its turn and should receive its second packet.
+        Ptr<QueueDiscItem> second = qdisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            second,
+            nullptr,
+            "Second dequeue should return a packet");
+
+        FutureNetTrafficTag secondTag;
+        second->GetPacket()->PeekPacketTag(secondTag);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            secondTag.GetPriority(),
+            0,
+            "Class 0 should continue its turn");
+
+        // Once class 0 is empty, WRR should serve the refilled class 1.
+        Ptr<QueueDiscItem> third = qdisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            third,
+            nullptr,
+            "Third dequeue should return the refilled packet");
+
+        FutureNetTrafficTag thirdTag;
+        third->GetPacket()->PeekPacketTag(thirdTag);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            thirdTag.GetPriority(),
+            1,
+            "Refilled class 1 should receive service");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetNPackets(),
+            0,
+            "All packets should have been dequeued");
+
+        Simulator::Destroy();
+    }
+};
+
+
 
 /**
  * @brief Test WRR continues after dropping an expired packet.
@@ -2099,6 +2216,93 @@ class FutureNetQueueDiscWrrExpiredPacketTestCase : public TestCase
         Simulator::Destroy();
     }
 };
+
+
+class FutureNetQueueDiscWrrPeekExpiredPacketTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscWrrPeekExpiredPacketTestCase()
+        : TestCase("WRR Peek does not drop expired packets")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(3));
+        qdisc->SetAttribute("NumPriorityClasses", UintegerValue(4));
+        qdisc->SetAttribute("WrrWeights", StringValue("1,1,1,1"));
+        qdisc->SetAttribute("ExpiredPacketPolicy", UintegerValue(0));
+        qdisc->Initialize();
+
+        // Enqueue an already-expired packet in class 0.
+        Ptr<Packet> expiredPacket = Create<Packet>(100);
+
+        DeadlineTag expiredDeadline;
+        expiredDeadline.SetDeadline(MilliSeconds(0));
+        expiredPacket->AddPacketTag(expiredDeadline);
+
+        Ptr<QueueDiscItem> expiredItem =
+            Create<FutureNetQueueDiscTestItem>(
+                expiredPacket, Address(), 0);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Enqueue(expiredItem),
+            true,
+            "Expired packet should initially be enqueued");
+
+        // Advance simulation time beyond the deadline.
+        Simulator::Schedule(MilliSeconds(1), []() {});
+        Simulator::Run();
+
+        // Peek should inspect the candidate without dropping it.
+        Ptr<const QueueDiscItem> peeked = qdisc->Peek();
+
+        NS_TEST_ASSERT_MSG_NE(
+            peeked,
+            nullptr,
+            "Peek should return the queued candidate");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            peeked->GetPacket()->GetUid(),
+            expiredPacket->GetUid(),
+            "Peek should return the expired head packet");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetDeadlineMissCount(),
+            0,
+            "Peek must not record a deadline miss");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetNPackets(),
+            1,
+            "Peek must not remove the expired packet");
+
+        // Dequeue performs the actual deadline check and drop.
+        Ptr<QueueDiscItem> dequeued = qdisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_EQ(
+            dequeued,
+            nullptr,
+            "Dequeue should drop the only expired packet");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetDeadlineMissCount(),
+            1,
+            "Dequeue should record exactly one deadline miss");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetNPackets(),
+            0,
+            "The expired packet should have been removed");
+
+        Simulator::Destroy();
+    }
+};
+
 
 /**
  * @brief Test DeadlineMiss trace reports the correct packet information.
@@ -2387,6 +2591,117 @@ class FutureNetQueueDiscWrrMinimumWeightsTestCase : public TestCase
 };
 
 
+class FutureNetQueueDiscWrrValidWeightsTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscWrrValidWeightsTestCase()
+        : TestCase("WRR accepts valid weight configurations")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        const std::vector<std::string> configurations = {
+            "1,1,1,1",
+            "4,3,2,1"
+        };
+
+        for (const auto& weights : configurations)
+        {
+            Ptr<FutureNetQueueDisc> qdisc =
+                CreateObject<FutureNetQueueDisc>();
+
+            qdisc->SetAttribute("SchedulingMode", UintegerValue(3));
+            qdisc->SetAttribute("NumPriorityClasses", UintegerValue(4));
+            qdisc->SetAttribute("WrrWeights", StringValue(weights));
+
+            qdisc->Initialize();
+
+            NS_TEST_ASSERT_MSG_EQ(
+                qdisc->GetNPackets(),
+                0,
+                "New WRR queue should be empty");
+
+            qdisc->Dispose();
+        }
+
+        Simulator::Destroy();
+    }
+};
+
+
+class FutureNetQueueDiscWrrInvalidWeightsTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscWrrInvalidWeightsTestCase()
+        : TestCase("WRR rejects invalid weight configurations")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        const std::vector<std::string> invalidWeights = {
+            "0,2,1,1",
+            "-1,2,1,1",
+            "2,x,1,1",
+            "2,1,1",
+            "2,1,1,1,1",
+            "2,1,1,1,"
+        };
+
+        for (const auto& weights : invalidWeights)
+        {
+            pid_t child = fork();
+
+            NS_TEST_ASSERT_MSG_NE(
+                child,
+                -1,
+                "Could not create child process for weights: " << weights);
+
+            if (child == 0)
+            {
+                Ptr<FutureNetQueueDisc> qdisc =
+                    CreateObject<FutureNetQueueDisc>();
+
+                qdisc->SetAttribute(
+                    "SchedulingMode", UintegerValue(3));
+                qdisc->SetAttribute(
+                    "NumPriorityClasses", UintegerValue(4));
+                qdisc->SetAttribute(
+                    "WrrWeights", StringValue(weights));
+
+                qdisc->Initialize();
+
+                // Reaching here means invalid weights were accepted.
+                _exit(0);
+            }
+
+            int status = 0;
+            pid_t result = waitpid(child, &status, 0);
+
+            NS_TEST_ASSERT_MSG_EQ(
+                result,
+                child,
+                "Failed to wait for child process");
+
+            bool rejected =
+                WIFSIGNALED(status) ||
+                (WIFEXITED(status) && WEXITSTATUS(status) != 0);
+
+            NS_TEST_ASSERT_MSG_EQ(
+                rejected,
+                true,
+                "Invalid WRR weights were not rejected: " << weights);
+        }
+
+        Simulator::Destroy();
+    }
+};
+
+
+
 class FutureNetQueueDiscExpiredDropFreesCapacityTestCase : public TestCase
 {
   public:
@@ -2548,7 +2863,13 @@ class FutureNetQueueDiscTestSuite : public TestSuite
         AddTestCase(new FutureNetQueueDiscWrrUnderfilledClassTestCase,
                     TestCase::Duration::QUICK);
 
+        AddTestCase(new FutureNetQueueDiscWrrMidRoundRefillTestCase,
+                    TestCase::Duration::QUICK);
+
         AddTestCase(new FutureNetQueueDiscWrrExpiredPacketTestCase,
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscWrrPeekExpiredPacketTestCase,
                     TestCase::Duration::QUICK);
 
         AddTestCase(new FutureNetQueueDiscDeadlineMissTraceTestCase,
@@ -2561,6 +2882,12 @@ class FutureNetQueueDiscTestSuite : public TestSuite
                     TestCase::Duration::QUICK);
 
         AddTestCase(new FutureNetQueueDiscWrrMinimumWeightsTestCase,
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscWrrValidWeightsTestCase,
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscWrrInvalidWeightsTestCase,
                     TestCase::Duration::QUICK);
 
         AddTestCase(new FutureNetQueueDiscExpiredDropFreesCapacityTestCase,

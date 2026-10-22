@@ -173,6 +173,9 @@ FutureNetQueueDisc::GetWrrWeights() const
                             !(valueStream >> weight),
                         "Invalid WRR weight: '" << token << "'");
 
+        NS_ABORT_MSG_IF(token.empty() || token[0] == '-',
+                "WRR weights must be positive integers: '" << token << "'");
+
         valueStream >> std::ws;
 
         NS_ABORT_MSG_IF(!valueStream.eof(),
