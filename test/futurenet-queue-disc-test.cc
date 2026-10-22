@@ -22,13 +22,25 @@ class FutureNetQueueDiscTestItem : public QueueDiscItem
     bool Mark() override;
 };
 
-FutureNetQueueDiscTestItem::FutureNetQueueDiscTestItem(Ptr<Packet> packet,
-                                                       const Address& address,
-                                                       uint8_t priority)
+FutureNetQueueDiscTestItem::FutureNetQueueDiscTestItem(
+    Ptr<Packet> packet,
+    const Address& address,
+    uint8_t priority)
     : QueueDiscItem(packet, address, 0)
 {
     FutureNetTrafficTag tag;
-    tag.SetPriority(priority);
+
+    // Preserve an existing traffic tag, including its flow ID.
+    if (!packet->PeekPacketTag(tag))
+    {
+        tag.SetPriority(priority);
+    }
+    else
+    {
+        // Keep the flow ID and importance already set by the test.
+        tag.SetPriority(priority);
+    }
+
     packet->ReplacePacketTag(tag);
 }
 
@@ -92,6 +104,34 @@ ClassDequeuedCallback(uint8_t priority, Time sojournTime)
     g_classDequeuedPriority = priority;
     g_classDequeuedSojournTime = sojournTime;
     g_classDequeuedCount++;
+}
+
+static uint32_t g_deadlineMissFlowId = 0;
+static uint8_t g_deadlineMissPriority = 0;
+static Time g_deadlineMissLateness = Seconds(0);
+static uint32_t g_deadlineMissTraceCount = 0;
+
+static void
+DeadlineMissTraceCallback(uint32_t flowId,
+                          uint8_t priority,
+                          Time lateness)
+{
+    g_deadlineMissFlowId = flowId;
+    g_deadlineMissPriority = priority;
+    g_deadlineMissLateness = lateness;
+    ++g_deadlineMissTraceCount;
+}
+
+static uint32_t g_expiredDropTraceFlowId = 0;
+static uint8_t g_expiredDropTracePriority = 0;
+static uint32_t g_expiredDropTraceCount = 0;
+
+static void
+ExpiredDropTraceCallback(uint32_t flowId, uint8_t priority)
+{
+    g_expiredDropTraceFlowId = flowId;
+    g_expiredDropTracePriority = priority;
+    ++g_expiredDropTraceCount;
 }
 
 /**
@@ -1735,6 +1775,475 @@ private:
 
 
 /**
+ * @brief Test WRR continues after dropping an expired packet.
+ */
+class FutureNetQueueDiscWrrExpiredPacketTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscWrrExpiredPacketTestCase()
+        : TestCase("WRR continues after dropping an expired packet")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(3));
+        qdisc->SetAttribute("NumPriorityClasses", UintegerValue(4));
+        qdisc->SetAttribute("WrrWeights", StringValue("1,1,1,1"));
+        qdisc->SetAttribute("ExpiredPacketPolicy", UintegerValue(0));
+
+        qdisc->Initialize();
+
+        // Class 0 contains an expired packet.
+        Ptr<Packet> expiredPacket = Create<Packet>(100);
+
+        DeadlineTag expiredDeadline;
+        expiredDeadline.SetDeadline(MilliSeconds(0));
+        expiredPacket->AddPacketTag(expiredDeadline);
+
+        Ptr<QueueDiscItem> expiredItem =
+            Create<FutureNetQueueDiscTestItem>(
+                expiredPacket, Address(), 0);
+
+        // Class 1 contains a packet that has not expired.
+        Ptr<Packet> validPacket = Create<Packet>(100);
+
+        DeadlineTag validDeadline;
+        validDeadline.SetDeadline(MilliSeconds(10));
+        validPacket->AddPacketTag(validDeadline);
+
+        Ptr<QueueDiscItem> validItem =
+            Create<FutureNetQueueDiscTestItem>(
+                validPacket, Address(), 1);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Enqueue(expiredItem),
+            true,
+            "Expired packet should initially be enqueued");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Enqueue(validItem),
+            true,
+            "Valid packet should be enqueued");
+
+        // Advance time beyond the expired packet's deadline.
+        Simulator::Schedule(MilliSeconds(1), []() {});
+        Simulator::Run();
+
+        // WRR should drop the expired packet and continue to class 1.
+        Ptr<QueueDiscItem> dequeued = qdisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            dequeued,
+            nullptr,
+            "WRR should return the valid packet after dropping the expired one");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            dequeued->GetPacket()->GetUid(),
+            validPacket->GetUid(),
+            "The valid class 1 packet should be returned");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetDeadlineMissCount(),
+            1,
+            "Exactly one deadline miss should be recorded");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetNPackets(),
+            0,
+            "Both packets should have been removed or dropped");
+
+        Simulator::Destroy();
+    }
+};
+
+/**
+ * @brief Test DeadlineMiss trace reports the correct packet information.
+ */
+class FutureNetQueueDiscDeadlineMissTraceTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscDeadlineMissTraceTestCase()
+        : TestCase("DeadlineMiss trace reports correct packet information")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        g_deadlineMissFlowId = 0;
+        g_deadlineMissPriority = 0;
+        g_deadlineMissLateness = Seconds(0);
+        g_deadlineMissTraceCount = 0;
+
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(3));
+        qdisc->SetAttribute("NumPriorityClasses", UintegerValue(4));
+        qdisc->SetAttribute("WrrWeights", StringValue("1,1,1,1"));
+        qdisc->SetAttribute("ExpiredPacketPolicy", UintegerValue(0));
+        qdisc->SetAttribute("EnableDeadlineTracing", BooleanValue(true));
+
+        qdisc->Initialize();
+
+        bool connected = qdisc->TraceConnectWithoutContext(
+            "DeadlineMiss",
+            MakeCallback(&DeadlineMissTraceCallback));
+
+        NS_TEST_ASSERT_MSG_EQ(
+            connected,
+            true,
+            "Should connect to the DeadlineMiss trace");
+
+        Ptr<Packet> packet = Create<Packet>(100);
+
+        DeadlineTag deadlineTag;
+        deadlineTag.SetDeadline(MilliSeconds(5));
+        packet->AddPacketTag(deadlineTag);
+
+        FutureNetTrafficTag trafficTag;
+        trafficTag.SetPriority(2);
+        trafficTag.SetFlowId(123);
+        packet->AddPacketTag(trafficTag);
+
+        FutureNetTrafficTag verifyTag;
+
+        NS_TEST_ASSERT_MSG_EQ(
+            packet->PeekPacketTag(verifyTag),
+            true,
+            "Traffic tag should exist before enqueue");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            verifyTag.GetFlowId(),
+            123,
+            "Flow ID should be 123 before enqueue");
+
+        Ptr<QueueDiscItem> item =
+            Create<FutureNetQueueDiscTestItem>(
+                packet, Address(), 2);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Enqueue(item),
+            true,
+            "Packet should be enqueued successfully");
+
+        // Advance simulation time beyond the packet deadline.
+        Simulator::Schedule(MilliSeconds(10), []() {});
+        Simulator::Run();
+
+        // Dequeue triggers the deadline check.
+        Ptr<QueueDiscItem> dequeued = qdisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_EQ(
+            dequeued,
+            nullptr,
+            "Expired packet should be dropped");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            g_deadlineMissTraceCount,
+            1,
+            "DeadlineMiss trace should fire exactly once");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            g_deadlineMissFlowId,
+            123,
+            "Trace should report the correct flow ID");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            static_cast<uint32_t>(g_deadlineMissPriority),
+            2,
+            "Trace should report the correct priority");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            g_deadlineMissLateness,
+            MilliSeconds(5),
+            "Lateness should be 5 ms (10 ms now minus 5 ms deadline)");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetDeadlineMissCount(),
+            1,
+            "Deadline miss count should be one");
+
+        Simulator::Destroy();
+    }
+};
+
+class FutureNetQueueDiscExpiredDropTraceTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscExpiredDropTraceTestCase()
+        : TestCase("ExpiredDrop trace reports correct flow ID and priority")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        g_expiredDropTraceFlowId = 0;
+        g_expiredDropTracePriority = 0;
+        g_expiredDropTraceCount = 0;
+
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(3));
+        qdisc->SetAttribute("NumPriorityClasses", UintegerValue(4));
+        qdisc->SetAttribute("WrrWeights", StringValue("1,1,1,1"));
+        qdisc->SetAttribute("ExpiredPacketPolicy", UintegerValue(0));
+        qdisc->SetAttribute("EnableDeadlineTracing", BooleanValue(true));
+
+        qdisc->Initialize();
+
+        bool connected = qdisc->TraceConnectWithoutContext(
+            "ExpiredDrop",
+            MakeCallback(&ExpiredDropTraceCallback));
+
+        NS_TEST_ASSERT_MSG_EQ(
+            connected, true, "Should connect to the ExpiredDrop trace");
+
+        Ptr<Packet> packet = Create<Packet>(100);
+
+        DeadlineTag deadlineTag;
+        deadlineTag.SetDeadline(MilliSeconds(5));
+        packet->AddPacketTag(deadlineTag);
+
+        FutureNetTrafficTag trafficTag;
+        trafficTag.SetPriority(2);
+        trafficTag.SetFlowId(456);
+        packet->AddPacketTag(trafficTag);
+
+        Ptr<QueueDiscItem> item =
+            Create<FutureNetQueueDiscTestItem>(
+                packet, Address(), 2);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Enqueue(item), true, "Packet should be enqueued");
+
+        // Move simulation time past the deadline.
+        Simulator::Schedule(MilliSeconds(10), []() {});
+        Simulator::Run();
+
+        Ptr<QueueDiscItem> dequeued = qdisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_EQ(
+            dequeued, nullptr, "Expired packet should be dropped");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            g_expiredDropTraceCount,
+            1,
+            "ExpiredDrop trace should fire exactly once");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            g_expiredDropTraceFlowId,
+            456,
+            "ExpiredDrop should report flow ID 456");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            static_cast<uint32_t>(g_expiredDropTracePriority),
+            2,
+            "ExpiredDrop should report priority 2");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetDeadlineMissCount(),
+            1,
+            "Exactly one deadline miss should be recorded");
+
+        Simulator::Destroy();
+    }
+};
+
+
+class FutureNetQueueDiscDefaultDeadlineTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscDefaultDeadlineTestCase()
+        : TestCase("DefaultDeadline is applied to packets without a deadline")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(0));
+        qdisc->SetAttribute("DefaultDeadline", TimeValue(MilliSeconds(20)));
+
+        qdisc->Initialize();
+
+        Ptr<Packet> packet = Create<Packet>(100);
+
+        // Add a traffic tag, but no DeadlineTag.
+        FutureNetTrafficTag trafficTag;
+        trafficTag.SetPriority(0);
+        trafficTag.SetFlowId(789);
+        packet->AddPacketTag(trafficTag);
+
+        Ptr<QueueDiscItem> item =
+            Create<FutureNetQueueDiscTestItem>(
+                packet, Address(), 0);
+
+        DeadlineTag initialTag;
+
+        NS_TEST_ASSERT_MSG_EQ(
+            packet->PeekPacketTag(initialTag),
+            false,
+            "Packet should initially have no deadline tag");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Enqueue(item),
+            true,
+            "Packet should enqueue successfully");
+
+        DeadlineTag resultTag;
+        NS_TEST_ASSERT_MSG_EQ(
+            packet->PeekPacketTag(resultTag),
+            true,
+            "DefaultDeadline should add a deadline tag");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            resultTag.GetDeadline(),
+            MilliSeconds(20),
+            "Deadline should match the configured default");
+
+        Simulator::Destroy();
+    }
+};
+
+
+class FutureNetQueueDiscWrrMinimumWeightsTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscWrrMinimumWeightsTestCase()
+        : TestCase("WRR accepts minimum valid weights")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(3));
+        qdisc->SetAttribute("NumPriorityClasses", UintegerValue(4));
+        qdisc->SetAttribute("WrrWeights", StringValue("1,1,1,1"));
+
+        qdisc->Initialize();
+
+        // All four weights are valid and the configuration initializes.
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetNPackets(),
+            0,
+            "New WRR queue should be empty");
+
+        Simulator::Destroy();
+    }
+};
+
+
+class FutureNetQueueDiscExpiredDropFreesCapacityTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscExpiredDropFreesCapacityTestCase()
+        : TestCase("Dropping an expired packet frees queue capacity")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("QueueLimit", UintegerValue(2));
+        qdisc->SetAttribute("NumPriorityClasses", UintegerValue(4));
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(0));
+        qdisc->SetAttribute("ExpiredPacketPolicy", UintegerValue(0));
+
+        qdisc->Initialize();
+
+        // Enqueue an expired packet in priority class 0.
+        Ptr<Packet> expiredPacket = Create<Packet>(100);
+
+        DeadlineTag expiredDeadline;
+        expiredDeadline.SetDeadline(MilliSeconds(5));
+        expiredPacket->AddPacketTag(expiredDeadline);
+
+        Ptr<QueueDiscItem> expiredItem =
+            Create<FutureNetQueueDiscTestItem>(
+                expiredPacket, Address(), 0);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Enqueue(expiredItem),
+            true,
+            "Expired packet should initially be accepted");
+
+        // Fill the second slot with a packet without a deadline.
+        Ptr<QueueDiscItem> secondItem =
+            Create<FutureNetQueueDiscTestItem>(
+                Create<Packet>(100), Address(), 1);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Enqueue(secondItem),
+            true,
+            "Second packet should be accepted");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetNPackets(),
+            2,
+            "Queue should be full");
+
+        // Advance beyond the first packet's deadline.
+        Simulator::Schedule(MilliSeconds(10), []() {});
+        Simulator::Run();
+
+        // Strict priority checks class 0 first and drops the expired packet.
+        Ptr<QueueDiscItem> dequeued = qdisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            dequeued,
+            nullptr,
+            "Dequeue should continue and return the valid packet");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            dequeued->GetPacket()->GetUid(),
+            secondItem->GetPacket()->GetUid(),
+            "The valid packet should be returned after the expired packet is dropped");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetNPackets(),
+            0,
+            "Both packets should be removed or dropped");
+
+        // Verify that the freed capacity can be used again.
+        Ptr<QueueDiscItem> replacementItem =
+            Create<FutureNetQueueDiscTestItem>(
+                Create<Packet>(100), Address(), 2);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Enqueue(replacementItem),
+            true,
+            "A new packet should be accepted after the expired packet is dropped");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetNPackets(),
+            1,
+            "Queue should contain the replacement packet");
+
+        Simulator::Destroy();
+    }
+};
+
+
+
+/**
  * @brief FutureNetQueueDisc test suite.
  */
 class FutureNetQueueDiscTestSuite : public TestSuite
@@ -1785,6 +2294,24 @@ class FutureNetQueueDiscTestSuite : public TestSuite
                     TestCase::Duration::QUICK);
 
         AddTestCase(new FutureNetQueueDiscWrrPeekAfterWeightTestCase(),
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscWrrExpiredPacketTestCase,
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscDeadlineMissTraceTestCase,
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscExpiredDropTraceTestCase,
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscDefaultDeadlineTestCase,
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscWrrMinimumWeightsTestCase,
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscExpiredDropFreesCapacityTestCase,
                     TestCase::Duration::QUICK);
     }
 

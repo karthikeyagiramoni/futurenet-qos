@@ -260,13 +260,13 @@ FutureNetQueueDisc::CheckDeadline(Ptr<QueueDiscItem> item)
     ++m_deadlineMissCount;
 
     FutureNetTrafficTag trafficTag;
-    uint8_t priority = m_defaultPriority;
     uint32_t flowId = 0;
+    uint8_t priority = m_defaultPriority;
 
     if (item->GetPacket()->PeekPacketTag(trafficTag))
     {
-        priority = trafficTag.GetPriority();
         flowId = trafficTag.GetFlowId();
+        priority = trafficTag.GetPriority();
     }
 
     const Time lateness = now - deadline;
@@ -416,28 +416,28 @@ FutureNetQueueDisc::DoDequeue()
     // Weighted Round Robin mode
     if (m_schedulingMode == 3)
     {
-        std::vector<uint32_t> weights = GetWrrWeights();
+        const std::vector<uint32_t> weights = GetWrrWeights();
+        uint32_t emptyClassesChecked = 0;
 
-        for (uint32_t attempts = 0;
-             attempts < m_numPriorityClasses;)
+        while (emptyClassesChecked < m_numPriorityClasses)
         {
-            uint32_t priority = m_wrrCurrentClass;
+            const uint32_t priority = m_wrrCurrentClass;
             Ptr<InternalQueue> queue = GetInternalQueue(priority);
 
             if (queue->IsEmpty())
             {
-                // Skip empty classes.
                 m_wrrPacketsServed = 0;
                 m_wrrCurrentClass =
                     (m_wrrCurrentClass + 1) % m_numPriorityClasses;
-                ++attempts;
+                ++emptyClassesChecked;
                 continue;
             }
 
+            // A non-empty class was found.
+            emptyClassesChecked = 0;
+
             Ptr<QueueDiscItem> item = queue->Dequeue();
 
-            // Update WRR state for every dequeued packet,
-            // including expired packets that are dropped.
             ++m_wrrPacketsServed;
 
             if (m_wrrPacketsServed >= weights[priority])
@@ -445,10 +445,8 @@ FutureNetQueueDisc::DoDequeue()
                 m_wrrPacketsServed = 0;
                 m_wrrCurrentClass =
                     (m_wrrCurrentClass + 1) % m_numPriorityClasses;
-                ++attempts;
             }
 
-            // Check the packet's deadline before transmission.
             item = CheckDeadline(item);
 
             if (item != nullptr)
@@ -457,11 +455,12 @@ FutureNetQueueDisc::DoDequeue()
                 return item;
             }
 
-            // The packet was dropped. Continue looking for another one.
+            // An expired packet was dropped. Continue searching.
         }
 
         return nullptr;
     }
+
 
     // EDF mode
     if (m_schedulingMode == 1)
