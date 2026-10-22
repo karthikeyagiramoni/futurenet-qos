@@ -401,6 +401,57 @@ class FutureNetQueueDiscPriorityTestCase : public TestCase
 };
 
 
+class FutureNetQueueDiscDefaultPriorityTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscDefaultPriorityTestCase()
+        : TestCase("Untagged packets use the configured default priority")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(0));
+        qdisc->SetAttribute("DefaultPriority", UintegerValue(2));
+        qdisc->Initialize();
+
+        Ptr<Packet> untaggedPacket = Create<Packet>(100);
+        Ptr<QueueDiscItem> untaggedItem =
+            Create<FutureNetQueueDiscNoTagTestItem>(
+                untaggedPacket, Address());
+
+        Ptr<Packet> priority3Packet = Create<Packet>(100);
+        Ptr<QueueDiscItem> priority3Item =
+            Create<FutureNetQueueDiscTestItem>(
+                priority3Packet, Address(), 3);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Enqueue(priority3Item), true,
+            "Priority 3 packet should enqueue");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Enqueue(untaggedItem), true,
+            "Untagged packet should enqueue");
+
+        Ptr<QueueDiscItem> first = qdisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            first, nullptr,
+            "First dequeue should return a packet");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            first->GetPacket()->GetUid(),
+            untaggedPacket->GetUid(),
+            "Default-priority-2 packet should precede priority 3");
+
+        Simulator::Destroy();
+    }
+};
+
 
 class FutureNetQueueDiscPriorityPeekTestCase : public TestCase
 {
@@ -858,6 +909,62 @@ class FutureNetQueueDiscEdfMissingDeadlineTestCase : public TestCase
     }
 };
 
+
+class FutureNetQueueDiscEdfMissingDeadlineFifoTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscEdfMissingDeadlineFifoTestCase()
+        : TestCase("EDF preserves FIFO order for packets without deadlines")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(1));
+        qdisc->SetAttribute("DefaultDeadline", TimeValue(Time::Min()));
+        qdisc->Initialize();
+
+        Ptr<Packet> packet1 = Create<Packet>(100);
+        Ptr<Packet> packet2 = Create<Packet>(100);
+        Ptr<Packet> packet3 = Create<Packet>(100);
+
+        Ptr<QueueDiscItem> item1 =
+            Create<FutureNetQueueDiscNoTagTestItem>(packet1, Address());
+        Ptr<QueueDiscItem> item2 =
+            Create<FutureNetQueueDiscNoTagTestItem>(packet2, Address());
+        Ptr<QueueDiscItem> item3 =
+            Create<FutureNetQueueDiscNoTagTestItem>(packet3, Address());
+
+        NS_TEST_ASSERT_MSG_EQ(qdisc->Enqueue(item1), true,
+                              "First packet should enqueue");
+        NS_TEST_ASSERT_MSG_EQ(qdisc->Enqueue(item2), true,
+                              "Second packet should enqueue");
+        NS_TEST_ASSERT_MSG_EQ(qdisc->Enqueue(item3), true,
+                              "Third packet should enqueue");
+
+        Ptr<QueueDiscItem> dequeued1 = qdisc->Dequeue();
+        Ptr<QueueDiscItem> dequeued2 = qdisc->Dequeue();
+        Ptr<QueueDiscItem> dequeued3 = qdisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_EQ(dequeued1->GetPacket()->GetUid(),
+                              packet1->GetUid(),
+                              "First packet should dequeue first");
+        NS_TEST_ASSERT_MSG_EQ(dequeued2->GetPacket()->GetUid(),
+                              packet2->GetUid(),
+                              "Second packet should dequeue second");
+        NS_TEST_ASSERT_MSG_EQ(dequeued3->GetPacket()->GetUid(),
+                              packet3->GetUid(),
+                              "Third packet should dequeue third");
+
+        Simulator::Destroy();
+    }
+};
+
+
 /**
  * @brief Test Hybrid scheduling.
  *
@@ -1111,6 +1218,73 @@ class FutureNetQueueDiscHybridPeekTestCase : public TestCase
         Simulator::Destroy();
     }
 };
+
+
+class FutureNetQueueDiscHybridEqualDeadlineTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscHybridEqualDeadlineTestCase()
+        : TestCase("Hybrid preserves FIFO order for equal deadlines in one class")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(2));
+        qdisc->Initialize();
+
+
+        Ptr<Packet> packet1 = Create<Packet>(100);
+        Ptr<Packet> packet2 = Create<Packet>(100);
+        Ptr<Packet> packet3 = Create<Packet>(100);
+        const Time deadline = MilliSeconds(20);
+
+        DeadlineTag tag;
+        tag.SetDeadline(deadline);
+        packet1->AddPacketTag(tag);
+        packet2->AddPacketTag(tag);
+        packet3->AddPacketTag(tag);
+
+        Ptr<QueueDiscItem> item1 =
+            Create<FutureNetQueueDiscTestItem>(
+                packet1, Address(), 1);
+        Ptr<QueueDiscItem> item2 =
+            Create<FutureNetQueueDiscTestItem>(
+                packet2, Address(), 1);
+        Ptr<QueueDiscItem> item3 =
+            Create<FutureNetQueueDiscTestItem>(
+                packet3, Address(), 1);
+
+        NS_TEST_ASSERT_MSG_EQ(qdisc->Enqueue(item1), true,
+                              "First packet should enqueue");
+        NS_TEST_ASSERT_MSG_EQ(qdisc->Enqueue(item2), true,
+                              "Second packet should enqueue");
+        NS_TEST_ASSERT_MSG_EQ(qdisc->Enqueue(item3), true,
+                              "Third packet should enqueue");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Dequeue()->GetPacket()->GetUid(),
+            packet1->GetUid(),
+            "First packet should dequeue first");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Dequeue()->GetPacket()->GetUid(),
+            packet2->GetUid(),
+            "Second packet should dequeue second");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Dequeue()->GetPacket()->GetUid(),
+            packet3->GetUid(),
+            "Third packet should dequeue third");
+
+        Simulator::Destroy();
+    }
+};
+
 
 
 /**
@@ -1774,6 +1948,71 @@ private:
 };
 
 
+class FutureNetQueueDiscWrrUnderfilledClassTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscWrrUnderfilledClassTestCase()
+        : TestCase("WRR serves other classes when one class has fewer packets than its weight")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(3));
+        qdisc->SetAttribute("NumPriorityClasses", UintegerValue(4));
+        qdisc->SetAttribute("WrrWeights", StringValue("3,2,1,1"));
+        qdisc->Initialize();
+
+        // Class 0 has only one packet; class 1 has three.
+        for (uint8_t priority : {0, 1, 1, 1})
+        {
+            Ptr<QueueDiscItem> item =
+                Create<FutureNetQueueDiscTestItem>(
+                    Create<Packet>(100), Address(), priority);
+
+            NS_TEST_ASSERT_MSG_EQ(
+                qdisc->Enqueue(item),
+                true,
+                "Packet enqueue should succeed");
+        }
+
+        // Class 0 is served first, then class 1 must receive service.
+        for (uint8_t expectedPriority : {0, 1, 1, 1})
+        {
+            Ptr<QueueDiscItem> dequeued = qdisc->Dequeue();
+
+            NS_TEST_ASSERT_MSG_NE(
+                dequeued,
+                nullptr,
+                "WRR should return a packet");
+
+            FutureNetTrafficTag tag;
+            NS_TEST_ASSERT_MSG_EQ(
+                dequeued->GetPacket()->PeekPacketTag(tag),
+                true,
+                "Dequeued packet should have a traffic tag");
+
+            NS_TEST_ASSERT_MSG_EQ(
+                tag.GetPriority(),
+                expectedPriority,
+                "WRR should skip the exhausted class and serve class 1");
+        }
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetNPackets(),
+            0,
+            "All packets should have been dequeued");
+
+        Simulator::Destroy();
+    }
+};
+
+
+
 /**
  * @brief Test WRR continues after dropping an expired packet.
  */
@@ -2257,6 +2496,10 @@ class FutureNetQueueDiscTestSuite : public TestSuite
 
         AddTestCase(new FutureNetQueueDiscPriorityTestCase,
                     TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscDefaultPriorityTestCase,
+                    TestCase::Duration::QUICK);
+
         AddTestCase(new FutureNetQueueDiscPriorityPeekTestCase,
                     TestCase::Duration::QUICK);
 
@@ -2267,6 +2510,9 @@ class FutureNetQueueDiscTestSuite : public TestSuite
                     TestCase::Duration::QUICK);
 
         AddTestCase(new FutureNetQueueDiscHybridPeekTestCase,
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscHybridEqualDeadlineTestCase,
                     TestCase::Duration::QUICK);
 
         AddTestCase(new FutureNetQueueDiscDeadlineTestCase,
@@ -2287,6 +2533,9 @@ class FutureNetQueueDiscTestSuite : public TestSuite
         AddTestCase(new FutureNetQueueDiscEdfMissingDeadlineTestCase,
                     TestCase::Duration::QUICK);
 
+        AddTestCase(new FutureNetQueueDiscEdfMissingDeadlineFifoTestCase,
+                    TestCase::Duration::QUICK);
+
         AddTestCase(new FutureNetQueueDiscWrrPeekTestCase(),
                     TestCase::Duration::QUICK);
 
@@ -2294,6 +2543,9 @@ class FutureNetQueueDiscTestSuite : public TestSuite
                     TestCase::Duration::QUICK);
 
         AddTestCase(new FutureNetQueueDiscWrrPeekAfterWeightTestCase(),
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscWrrUnderfilledClassTestCase,
                     TestCase::Duration::QUICK);
 
         AddTestCase(new FutureNetQueueDiscWrrExpiredPacketTestCase,
