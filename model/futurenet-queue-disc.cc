@@ -541,38 +541,38 @@ FutureNetQueueDisc::DoPeek()
     // Predict the next dequeue without modifying scheduler state.
     if (m_schedulingMode == 3)
     {
-        std::vector<uint32_t> weights = GetWrrWeights();
+        const std::vector<uint32_t> weights = GetWrrWeights();
+
+        uint32_t priority = m_wrrCurrentClass;
+        uint32_t packetsServed = m_wrrPacketsServed;
 
         for (uint32_t attempts = 0;
-            attempts < m_numPriorityClasses;
-            ++attempts)
+             attempts < m_numPriorityClasses;
+             ++attempts)
         {
-            uint32_t priority =
-                (m_wrrCurrentClass + attempts) % m_numPriorityClasses;
-
             Ptr<InternalQueue> queue = GetInternalQueue(priority);
 
             if (queue->IsEmpty())
             {
+                packetsServed = 0;
+                priority = (priority + 1) % m_numPriorityClasses;
                 continue;
             }
 
-            // The current class still has service remaining this turn.
-            if (attempts == 0 &&
-                m_wrrPacketsServed < weights[priority])
+            // If this class has exhausted its turn, inspect the next class.
+            if (packetsServed >= weights[priority])
             {
-                return queue->Peek();
+                packetsServed = 0;
+                priority = (priority + 1) % m_numPriorityClasses;
+                continue;
             }
 
-            // Later non-empty classes are candidates after the current turn.
-            if (attempts > 0)
-            {
-                return queue->Peek();
-            }
+            return queue->Peek();
         }
 
         return nullptr;
     }
+
 
     // EDF mode uses a single internal EDF queue.
     if (m_schedulingMode == 1)

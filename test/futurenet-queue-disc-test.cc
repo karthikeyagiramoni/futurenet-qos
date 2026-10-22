@@ -1307,6 +1307,224 @@ private:
     }
 };
 
+class FutureNetQueueDiscWrrPeekAfterWeightTestCase : public TestCase
+{
+public:
+    FutureNetQueueDiscWrrPeekAfterWeightTestCase()
+        : TestCase("WRR Peek predicts the next class after weight is exhausted")
+    {
+    }
+
+private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(3));
+        qdisc->SetAttribute("NumPriorityClasses", UintegerValue(4));
+        qdisc->SetAttribute("WrrWeights", StringValue("3,2,1,1"));
+        qdisc->Initialize();
+
+        // Class 0 has more packets than its weight.
+        // Class 1 has one packet.
+        for (uint8_t priority : {0, 0, 0, 0, 1})
+        {
+            Ptr<QueueDiscItem> item =
+                Create<FutureNetQueueDiscTestItem>(
+                    Create<Packet>(100), Address(), priority);
+
+            NS_TEST_ASSERT_MSG_EQ(
+                qdisc->Enqueue(item),
+                true,
+                "Packet enqueue should succeed");
+        }
+
+        // Consume class 0's three-packet WRR turn.
+        for (uint32_t i = 0; i < 3; ++i)
+        {
+            Ptr<QueueDiscItem> item = qdisc->Dequeue();
+
+            NS_TEST_ASSERT_MSG_NE(
+                item,
+                nullptr,
+                "Expected a packet from class 0");
+
+            FutureNetTrafficTag tag;
+            item->GetPacket()->PeekPacketTag(tag);
+
+            NS_TEST_ASSERT_MSG_EQ(
+                tag.GetPriority(),
+                0,
+                "The first three packets should be from class 0");
+        }
+
+        // Class 0 still has a packet, but its WRR turn is exhausted.
+        // Peek should predict class 1, which Dequeue should then serve.
+        Ptr<const QueueDiscItem> peeked = qdisc->Peek();
+
+        NS_TEST_ASSERT_MSG_NE(
+            peeked,
+            nullptr,
+            "Peek should return the next packet");
+
+        FutureNetTrafficTag peekTag;
+        peeked->GetPacket()->PeekPacketTag(peekTag);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            peekTag.GetPriority(),
+            1,
+            "Peek should predict class 1 after class 0's weight is exhausted");
+
+        Ptr<QueueDiscItem> dequeued = qdisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            dequeued,
+            nullptr,
+            "Dequeue should return a packet");
+
+        FutureNetTrafficTag dequeuedTag;
+        dequeued->GetPacket()->PeekPacketTag(dequeuedTag);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            dequeuedTag.GetPriority(),
+            1,
+            "Dequeue should serve the same class predicted by Peek");
+
+        Simulator::Destroy();
+    }
+};
+
+
+class FutureNetQueueDiscWrrEmptyClassTestCase : public TestCase
+{
+public:
+    FutureNetQueueDiscWrrEmptyClassTestCase()
+        : TestCase("WRR skips empty classes and serves them after refill")
+    {
+    }
+
+private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> qdisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        qdisc->SetAttribute("SchedulingMode", UintegerValue(3));
+        qdisc->SetAttribute("NumPriorityClasses", UintegerValue(4));
+        qdisc->SetAttribute("WrrWeights", StringValue("3,2,1,1"));
+
+        qdisc->Initialize();
+
+        // Only classes 0 and 2 initially contain packets.
+        for (uint8_t priority : {0, 0, 0, 2})
+        {
+            Ptr<QueueDiscItem> item =
+                Create<FutureNetQueueDiscTestItem>(
+                    Create<Packet>(100), Address(), priority);
+
+            NS_TEST_ASSERT_MSG_EQ(
+                qdisc->Enqueue(item),
+                true,
+                "Initial packet enqueue should succeed");
+        }
+
+        // Class 0 uses its full weight, then empty class 1 is skipped.
+        for (uint8_t expectedPriority : {0, 0, 0, 2})
+        {
+            Ptr<const QueueDiscItem> peeked = qdisc->Peek();
+
+            NS_TEST_ASSERT_MSG_NE(
+                peeked,
+                nullptr,
+                "Peek should return the next available packet");
+
+            FutureNetTrafficTag peekTag;
+            NS_TEST_ASSERT_MSG_EQ(
+                peeked->GetPacket()->PeekPacketTag(peekTag),
+                true,
+                "Peeked packet should have a traffic tag");
+
+            NS_TEST_ASSERT_MSG_EQ(
+                peekTag.GetPriority(),
+                expectedPriority,
+                "Peek should predict the next available class");
+
+            Ptr<QueueDiscItem> dequeued = qdisc->Dequeue();
+
+            NS_TEST_ASSERT_MSG_NE(
+                dequeued,
+                nullptr,
+                "Dequeue should return a packet");
+
+            FutureNetTrafficTag dequeuedTag;
+            NS_TEST_ASSERT_MSG_EQ(
+                dequeued->GetPacket()->PeekPacketTag(dequeuedTag),
+                true,
+                "Dequeued packet should have a traffic tag");
+
+            NS_TEST_ASSERT_MSG_EQ(
+                dequeuedTag.GetPriority(),
+                expectedPriority,
+                "WRR should skip empty classes");
+        }
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->GetNPackets(),
+            0,
+            "All initial packets should have been dequeued");
+
+        // Refill class 1 and verify it can receive service.
+        Ptr<QueueDiscItem> refillItem =
+            Create<FutureNetQueueDiscTestItem>(
+                Create<Packet>(100), Address(), 1);
+
+        NS_TEST_ASSERT_MSG_EQ(
+            qdisc->Enqueue(refillItem),
+            true,
+            "Refill packet should be accepted");
+
+        Ptr<const QueueDiscItem> peeked = qdisc->Peek();
+
+        NS_TEST_ASSERT_MSG_NE(
+            peeked,
+            nullptr,
+            "Peek should find the refilled packet");
+
+        FutureNetTrafficTag peekTag;
+        NS_TEST_ASSERT_MSG_EQ(
+            peeked->GetPacket()->PeekPacketTag(peekTag),
+            true,
+            "Refilled packet should have a traffic tag");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            peekTag.GetPriority(),
+            1,
+            "Peek should identify the refilled class");
+
+        Ptr<QueueDiscItem> dequeued = qdisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            dequeued,
+            nullptr,
+            "Refilled packet should be dequeued");
+
+        FutureNetTrafficTag dequeuedTag;
+        NS_TEST_ASSERT_MSG_EQ(
+            dequeued->GetPacket()->PeekPacketTag(dequeuedTag),
+            true,
+            "Dequeued refill packet should have a traffic tag");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            dequeuedTag.GetPriority(),
+            1,
+            "Refilled class should receive service");
+
+        Simulator::Destroy();
+    }
+};
+
+
 /**
  * @brief FutureNetQueueDisc test suite.
  */
@@ -1347,6 +1565,12 @@ class FutureNetQueueDiscTestSuite : public TestSuite
                     TestCase::Duration::QUICK);
 
         AddTestCase(new FutureNetQueueDiscWrrPeekTestCase(),
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscWrrEmptyClassTestCase(),
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscWrrPeekAfterWeightTestCase(),
                     TestCase::Duration::QUICK);
     }
 
