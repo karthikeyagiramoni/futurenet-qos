@@ -360,6 +360,86 @@ class FutureNetQueueDiscPriorityTestCase : public TestCase
     }
 };
 
+
+
+class FutureNetQueueDiscPriorityPeekTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscPriorityPeekTestCase()
+        : TestCase("Test FutureNetQueueDisc strict priority Peek")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> queueDisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        queueDisc->Initialize();
+
+        Address address;
+
+        Ptr<Packet> packetPriority3 = Create<Packet>(100);
+        Ptr<Packet> packetPriority1 = Create<Packet>(100);
+        Ptr<Packet> packetPriority0 = Create<Packet>(100);
+        Ptr<Packet> packetPriority2 = Create<Packet>(100);
+
+        Ptr<QueueDiscItem> itemPriority3 =
+            Create<FutureNetQueueDiscTestItem>(packetPriority3, address, 3);
+
+        Ptr<QueueDiscItem> itemPriority1 =
+            Create<FutureNetQueueDiscTestItem>(packetPriority1, address, 1);
+
+        Ptr<QueueDiscItem> itemPriority0 =
+            Create<FutureNetQueueDiscTestItem>(packetPriority0, address, 0);
+
+        Ptr<QueueDiscItem> itemPriority2 =
+            Create<FutureNetQueueDiscTestItem>(packetPriority2, address, 2);
+
+        // Enqueue packets in non-priority order.
+        queueDisc->Enqueue(itemPriority3);
+        queueDisc->Enqueue(itemPriority1);
+        queueDisc->Enqueue(itemPriority0);
+        queueDisc->Enqueue(itemPriority2);
+
+        NS_TEST_ASSERT_MSG_EQ(queueDisc->GetNPackets(),
+                              4,
+                              "QueueDisc should contain four packets");
+
+        // Peek should return the highest-priority packet (priority 0).
+        Ptr<const QueueDiscItem> peekedItem = queueDisc->Peek();
+
+        NS_TEST_ASSERT_MSG_NE(peekedItem,
+                              nullptr,
+                              "Peek should return a non-null item");
+
+        NS_TEST_ASSERT_MSG_EQ(peekedItem->GetPacket()->GetUid(),
+                              packetPriority0->GetUid(),
+                              "Peek should return the priority 0 packet");
+
+        // Peek must not remove any packets.
+        NS_TEST_ASSERT_MSG_EQ(queueDisc->GetNPackets(),
+                              4,
+                              "Peek should not change the packet count");
+
+        // Dequeue should return the same packet that Peek returned.
+        Ptr<QueueDiscItem> dequeuedItem = queueDisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(dequeuedItem,
+                              nullptr,
+                              "Dequeue should return a non-null item");
+
+        NS_TEST_ASSERT_MSG_EQ(dequeuedItem->GetPacket()->GetUid(),
+                              peekedItem->GetPacket()->GetUid(),
+                              "Dequeue should return the packet previously peeked");
+
+        NS_TEST_ASSERT_MSG_EQ(queueDisc->GetNPackets(),
+                              3,
+                              "Exactly one packet should be removed by Dequeue");
+    }
+};
+
 /**
  * @brief Test EDF scheduling.
  */
@@ -537,6 +617,19 @@ class FutureNetQueueDiscEdfTestCase : public TestCase
         NS_TEST_ASSERT_MSG_EQ(peekQueueDisc->GetNPackets(),
                             2,
                             "Peek should not remove the packet");
+        Ptr<QueueDiscItem> dequeuedAfterPeek = peekQueueDisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(dequeuedAfterPeek,
+                            nullptr,
+                            "Dequeue should return a packet after Peek");
+
+        NS_TEST_ASSERT_MSG_EQ(dequeuedAfterPeek->GetPacket()->GetUid(),
+                            peekedItem->GetPacket()->GetUid(),
+                            "Dequeue should return the same packet that Peek returned");
+
+        NS_TEST_ASSERT_MSG_EQ(peekQueueDisc->GetNPackets(),
+                            1,
+                            "Dequeue should remove exactly one packet");
     }
 };
 
@@ -863,6 +956,122 @@ class FutureNetQueueDiscHybridTestCase : public TestCase
             "QueueDisc should be empty after all packets are dequeued");
     }
 };
+
+
+/**
+ * @brief Test Peek behavior in Hybrid scheduling mode.
+ */
+class FutureNetQueueDiscHybridPeekTestCase : public TestCase
+{
+  public:
+    FutureNetQueueDiscHybridPeekTestCase()
+        : TestCase("Test FutureNetQueueDisc Hybrid Peek")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        Ptr<FutureNetQueueDisc> queueDisc =
+            CreateObject<FutureNetQueueDisc>();
+
+        queueDisc->SetAttribute("SchedulingMode", UintegerValue(2));
+        queueDisc->Initialize();
+
+        Address address;
+
+        // Priority 0, deadline 30 ms.
+        Ptr<Packet> packetP0D30 = Create<Packet>(100);
+        DeadlineTag deadlineP0D30;
+        deadlineP0D30.SetDeadline(MilliSeconds(30));
+        packetP0D30->AddPacketTag(deadlineP0D30);
+
+        // Priority 0, deadline 10 ms (should be selected first).
+        Ptr<Packet> packetP0D10 = Create<Packet>(100);
+        DeadlineTag deadlineP0D10;
+        deadlineP0D10.SetDeadline(MilliSeconds(10));
+        packetP0D10->AddPacketTag(deadlineP0D10);
+
+        // Priority 1, deadline 1 ms.
+        Ptr<Packet> packetP1D1 = Create<Packet>(100);
+        DeadlineTag deadlineP1D1;
+        deadlineP1D1.SetDeadline(MilliSeconds(1));
+        packetP1D1->AddPacketTag(deadlineP1D1);
+
+        Ptr<QueueDiscItem> itemP0D30 =
+            Create<FutureNetQueueDiscTestItem>(
+                packetP0D30, address, 0);
+
+        Ptr<QueueDiscItem> itemP0D10 =
+            Create<FutureNetQueueDiscTestItem>(
+                packetP0D10, address, 0);
+
+        Ptr<QueueDiscItem> itemP1D1 =
+            Create<FutureNetQueueDiscTestItem>(
+                packetP1D1, address, 1);
+
+        // Enqueue in a deliberately mixed order.
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->Enqueue(itemP0D30),
+            true,
+            "Priority 0 packet with 30 ms deadline should enqueue");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->Enqueue(itemP1D1),
+            true,
+            "Priority 1 packet should enqueue");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->Enqueue(itemP0D10),
+            true,
+            "Priority 0 packet with 10 ms deadline should enqueue");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->GetNPackets(),
+            3,
+            "QueueDisc should contain three packets");
+
+        // Peek should select priority 0 first, then EDF within priority 0.
+        Ptr<const QueueDiscItem> peekedItem = queueDisc->Peek();
+
+        NS_TEST_ASSERT_MSG_NE(
+            peekedItem,
+            nullptr,
+            "Peek should return a packet");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            peekedItem->GetPacket()->GetUid(),
+            packetP0D10->GetUid(),
+            "Hybrid Peek should return the earliest-deadline packet in priority 0");
+
+        // Peek must not remove a packet.
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->GetNPackets(),
+            3,
+            "Peek should not change the packet count");
+
+        // Dequeue should return the same packet that Peek returned.
+        Ptr<QueueDiscItem> dequeuedItem = queueDisc->Dequeue();
+
+        NS_TEST_ASSERT_MSG_NE(
+            dequeuedItem,
+            nullptr,
+            "Dequeue should return a packet after Peek");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            dequeuedItem->GetPacket()->GetUid(),
+            peekedItem->GetPacket()->GetUid(),
+            "Dequeue should return the same packet that Peek returned");
+
+        NS_TEST_ASSERT_MSG_EQ(
+            queueDisc->GetNPackets(),
+            2,
+            "Dequeue should remove exactly one packet");
+
+        Simulator::Destroy();
+    }
+};
+
 
 /**
  * @brief Test expired packet handling.
@@ -1539,11 +1748,16 @@ class FutureNetQueueDiscTestSuite : public TestSuite
 
         AddTestCase(new FutureNetQueueDiscPriorityTestCase,
                     TestCase::Duration::QUICK);
+        AddTestCase(new FutureNetQueueDiscPriorityPeekTestCase,
+                    TestCase::Duration::QUICK);
 
         AddTestCase(new FutureNetQueueDiscEdfTestCase,
                     TestCase::Duration::QUICK);
         
         AddTestCase(new FutureNetQueueDiscHybridTestCase,
+                    TestCase::Duration::QUICK);
+
+        AddTestCase(new FutureNetQueueDiscHybridPeekTestCase,
                     TestCase::Duration::QUICK);
 
         AddTestCase(new FutureNetQueueDiscDeadlineTestCase,
