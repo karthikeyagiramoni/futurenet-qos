@@ -1104,6 +1104,8 @@ class FutureNetQueueDiscHybridTestCase : public TestCase
             queueDisc->GetNPackets(),
             0,
             "QueueDisc should be empty after all packets are dequeued");
+
+        Simulator::Destroy();
     }
 };
 

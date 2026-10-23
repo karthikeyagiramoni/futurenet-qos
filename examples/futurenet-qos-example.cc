@@ -1,22 +1,24 @@
-
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
+
 #include "ns3/futurenet-queue-disc.h"
 #include "ns3/futurenet-traffic-tag.h"
 #include "ns3/futurenet-deadline-tag.h"
 
+#include <cstdint>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <string>
 
 using namespace ns3;
 
-NS_LOG_COMPONENT_DEFINE("FutureNetQosExample");
-
-/**
- * A concrete QueueDiscItem for the example.
- */
+// ------------------------------------------------------------
+// QueueDiscItem used by the example
+// ------------------------------------------------------------
 class ExampleQueueDiscItem : public QueueDiscItem
 {
-public:
+  public:
     ExampleQueueDiscItem(Ptr<Packet> packet,
                          const Address& address,
                          uint8_t priority,
@@ -28,12 +30,13 @@ public:
         trafficTag.SetPriority(priority);
         trafficTag.SetFlowId(flowId);
         trafficTag.SetImportance(importance);
+
         packet->ReplacePacketTag(trafficTag);
     }
 
     void AddHeader() override
     {
-        // No network-layer header is required for this queue-only example.
+        // No network header is needed for this queue-level example.
     }
 
     bool Mark() override
@@ -42,176 +45,413 @@ public:
     }
 };
 
-static void
-PrintDequeue(uint8_t priority, Time time)
+// ------------------------------------------------------------
+// Experiment configuration
+// ------------------------------------------------------------
+struct ExperimentConfig
 {
-    std::cout << "  Dequeued priority class " << unsigned(priority)
-              << " at " << time.GetMilliSeconds() << " ms" << std::endl;
+    uint32_t packetCount = 100;
+    uint32_t queueLimit = 20;
+    uint32_t arrivalIntervalMs = 1;
+    uint32_t serviceIntervalMs = 2;
+    uint32_t durationMs = 250;
+
+    uint8_t schedulingMode = 0;
+    uint8_t expiredPolicy = 0;
+    bool fairnessTest = false;
+
+    std::string csvFile = "futurenet-qos-results.csv";
+};
+
+static ExperimentConfig g_config;
+static Ptr<FutureNetQueueDisc> g_queueDisc;
+
+// ------------------------------------------------------------
+// Metrics
+// ------------------------------------------------------------
+static uint32_t g_enqueued = 0;
+static uint32_t g_transmitted = 0;
+static uint32_t g_enqueueDrops = 0;
+static uint32_t g_expiredDrops = 0;
+
+static uint64_t g_transmittedBytes = 0;
+static uint32_t g_transmittedByPriority[8] = {0};
+static uint64_t g_totalQueueDelayNs = 0;
+static uint32_t g_queueDelaySamples = 0;
+static uint32_t g_generated = 0;
+
+// ------------------------------------------------------------
+// Deadline-miss callback
+// Existing trace signature: (flowId, priority, deadline)
+// ------------------------------------------------------------
+static void
+PrintDeadlineMiss(uint32_t flowId, uint8_t priority, Time deadline)
+{
+    std::cout << "[DeadlineMiss]"
+              << " flow=" << flowId
+              << " priority=" << static_cast<uint32_t>(priority)
+              << " deadline=" << deadline.GetMilliSeconds()
+              << " ms"
+              << " now=" << Simulator::Now().GetMilliSeconds()
+              << " ms\n";
 }
 
+// ------------------------------------------------------------
+// Expired-drop callback
+// Existing trace signature: (flowId, priority)
+// ------------------------------------------------------------
 static void
-PrintDeadlineMiss(uint32_t flowId, uint8_t priority, Time lateness)
+RecordExpiredDrop(uint32_t flowId, uint8_t priority)
 {
-    std::cout << "  DEADLINE MISS: flow " << flowId
-              << ", priority " << unsigned(priority)
-              << ", lateness " << lateness.GetMilliSeconds()
-              << " ms" << std::endl;
+    ++g_expiredDrops;
+
+    std::cout << "[ExpiredDrop]"
+              << " flow=" << flowId
+              << " priority=" << static_cast<uint32_t>(priority)
+              << " time=" << Simulator::Now().GetMilliSeconds()
+              << " ms\n";
 }
 
+// ------------------------------------------------------------
+// ClassDequeued callback
+// Existing trace signature: (priority, sojournTime)
+// ------------------------------------------------------------
 static void
-PrintExpiredDrop(uint32_t flowId, uint8_t priority)
+RecordDequeued(uint8_t priority, Time sojournTime)
 {
-    std::cout << "  EXPIRED DROP: flow " << flowId
-              << ", priority " << unsigned(priority)
-              << std::endl;
+    ++g_queueDelaySamples;
+    g_totalQueueDelayNs +=
+        static_cast<uint64_t>(sojournTime.GetNanoSeconds());
+
+    if (priority < 8)
+    {
+        ++g_transmittedByPriority[priority];
+    }
+
+    std::cout << "[Dequeued]"
+              << " priority=" << static_cast<uint32_t>(priority)
+              << " queueDelay=" << sojournTime.GetMilliSeconds()
+              << " ms\n";
 }
 
+// ------------------------------------------------------------
+// Generate packets periodically
+// Deadlines are relative to each packet's arrival time.
+// ------------------------------------------------------------
+static void
+GeneratePacket(uint32_t sequence)
+{
+    if (sequence >= g_config.packetCount ||
+        Simulator::Now() >= MilliSeconds(g_config.durationMs))
+    {
+        return;
+    }
+
+    const uint32_t flowId = 1 + (sequence % 5);
+    const uint8_t priority = static_cast<uint8_t>(sequence % 4);
+
+    const double importance =
+        1.0 - (static_cast<double>(priority) * 0.2);
+
+    Ptr<Packet> packet = Create<Packet>(100);
+    ++g_generated;
+
+    const uint32_t deadlineMs = 10 + ((sequence % 5) * 10);
+
+    DeadlineTag deadlineTag;
+
+    if (g_config.fairnessTest)
+    {
+        // Keep packets from expiring during the fairness experiment.
+        deadlineTag.SetDeadline(
+            Simulator::Now() + Seconds(3600));
+    }
+    else
+    {
+        // Preserve the original deadline-sensitive experiment.
+        deadlineTag.SetDeadline(
+            Simulator::Now() + MilliSeconds(deadlineMs));
+    }
+
+    packet->AddPacketTag(deadlineTag);
+
+    Ptr<QueueDiscItem> item =
+        Create<ExampleQueueDiscItem>(
+            packet,
+            Address(),
+            priority,
+            flowId,
+            importance);
+
+    if (g_queueDisc->Enqueue(item))
+    {
+        ++g_enqueued;
+
+        std::cout << "[Enqueue]"
+                  << " seq=" << sequence
+                  << " flow=" << flowId
+                  << " priority=" << static_cast<uint32_t>(priority)
+                  << " deadline=" << deadlineMs << " ms"
+                  << " time=" << Simulator::Now().GetMilliSeconds()
+                  << " ms\n";
+    }
+    else
+    {
+        // Enqueue() returning false means this packet was rejected.
+        ++g_enqueueDrops;
+    }
+
+    if (sequence + 1 < g_config.packetCount)
+    {
+        Simulator::Schedule(
+            MilliSeconds(g_config.arrivalIntervalMs),
+            &GeneratePacket,
+            sequence + 1);
+    }
+}
+
+// ------------------------------------------------------------
+// Serve at most one packet per service interval.
+// A null return may mean an expired packet was dropped.
+// ------------------------------------------------------------
+static void
+ServePacket()
+{
+    if (Simulator::Now() >= MilliSeconds(g_config.durationMs))
+    {
+        return;
+    }
+
+    Ptr<QueueDiscItem> item = g_queueDisc->Dequeue();
+
+    if (item)
+    {
+        ++g_transmitted;
+        g_transmittedBytes += item->GetPacket()->GetSize();
+
+        std::cout << "[Transmit]"
+                  << " bytes=" << item->GetPacket()->GetSize()
+                  << " time=" << Simulator::Now().GetMilliSeconds()
+                  << " ms\n";
+    }
+
+    Simulator::Schedule(
+        MilliSeconds(g_config.serviceIntervalMs),
+        &ServePacket);
+}
+
+// ------------------------------------------------------------
+// Write results to CSV
+// ------------------------------------------------------------
+static void
+WriteResults()
+{
+    const double durationSeconds =
+        static_cast<double>(g_config.durationMs) / 1000.0;
+
+    const double averageDelayMs =
+        g_queueDelaySamples == 0
+            ? 0.0
+            : static_cast<double>(g_totalQueueDelayNs) /
+                  static_cast<double>(g_queueDelaySamples) / 1e6;
+
+    const double throughputBps =
+        durationSeconds <= 0.0
+            ? 0.0
+            : static_cast<double>(g_transmittedBytes) * 8.0 /
+                  durationSeconds;
+
+    const uint32_t totalDrops =
+        g_enqueueDrops + g_expiredDrops;
+
+    const uint32_t remainingInQueue = g_queueDisc->GetNPackets();
+
+    bool writeHeader = false;
+
+    {
+        std::ifstream input(g_config.csvFile);
+
+        if (!input.good() ||
+            input.peek() == std::ifstream::traits_type::eof())
+        {
+            writeHeader = true;
+        }
+    }
+
+    std::ofstream csv(g_config.csvFile, std::ios::app);
+
+    if (!csv.is_open())
+    {
+        std::cerr << "Error: Could not open CSV file: "
+                  << g_config.csvFile << '\n';
+        return;
+    }
+
+    if (writeHeader)
+    {
+        csv << "mode,generated,enqueued,enqueue_drops,expired_drops,"
+            "transmitted,remaining_in_queue,deadline_misses,"
+            "avg_queue_delay_ms,throughput_bps,"
+            "priority_0_tx,priority_1_tx,priority_2_tx,priority_3_tx\n";
+    }
+
+    csv << static_cast<uint32_t>(g_config.schedulingMode) << ','
+        << g_generated << ','
+        << g_enqueued << ','
+        << g_enqueueDrops << ','
+        << g_expiredDrops << ','
+        << g_transmitted << ','
+        << remainingInQueue << ','
+        << g_queueDisc->GetDeadlineMissCount() << ','
+        << std::fixed << std::setprecision(3)
+        << averageDelayMs << ','
+        << std::setprecision(2)
+        << throughputBps << ','
+        << g_transmittedByPriority[0] << ','
+        << g_transmittedByPriority[1] << ','
+        << g_transmittedByPriority[2] << ','
+        << g_transmittedByPriority[3] << '\n';
+
+    csv.close();
+
+    std::cout << "\n========== EXPERIMENT RESULTS ==========\n"
+              << "Scheduling mode: "
+              << static_cast<uint32_t>(g_config.schedulingMode) << '\n'
+              << "Enqueued: " << g_enqueued << '\n'
+              << "Transmitted: " << g_transmitted << '\n'
+              << "Enqueue drops: " << g_enqueueDrops << '\n'
+              << "Expired drops: " << g_expiredDrops << '\n'
+              << "Total drops: " << totalDrops << '\n'
+              << "Deadline misses: "
+              << g_queueDisc->GetDeadlineMissCount() << '\n'
+              << std::fixed << std::setprecision(3)
+              << "Average queue delay: "
+              << averageDelayMs << " ms\n"
+              << std::setprecision(2)
+              << "Queue-level throughput: "
+              << throughputBps << " bps\n"
+              << "CSV file: " << g_config.csvFile << '\n'
+              << "========================================\n";
+}
+
+// ------------------------------------------------------------
+// Main
+// ------------------------------------------------------------
 int
 main(int argc, char* argv[])
 {
-    uint32_t schedulingMode = 0;
-    uint32_t queueLimit = 20;
-    uint32_t expiredPolicy = 0;
-    uint32_t dequeueTimeMs = 0;
-
     CommandLine cmd(__FILE__);
-    cmd.AddValue("schedulingMode",
-                 "Scheduling mode: 0=Strict Priority, 1=EDF, "
-                 "2=Hybrid, 3=WRR",
-                 schedulingMode);
-    cmd.AddValue("queueLimit", "Maximum total packets in the queue", queueLimit);
-    cmd.AddValue("expiredPolicy",
-                "Expired packet policy: 0=Drop, 1=Transmit",
-                expiredPolicy);
-    cmd.AddValue("dequeueTimeMs",
-                "Simulation time in ms at which dequeuing begins",
-                dequeueTimeMs);
+
+    cmd.AddValue(
+        "schedulingMode",
+        "0=Strict Priority, 1=EDF, 2=Hybrid, 3=WRR",
+        g_config.schedulingMode);
+
+    cmd.AddValue(
+        "queueLimit",
+        "Maximum number of packets in the queue",
+        g_config.queueLimit);
+
+    cmd.AddValue(
+        "expiredPolicy",
+        "0=Drop expired packets, 1=Transmit expired packets",
+        g_config.expiredPolicy);
+
+    cmd.AddValue(
+        "arrivalIntervalMs",
+        "Packet arrival interval in milliseconds",
+        g_config.arrivalIntervalMs);
+
+    cmd.AddValue(
+        "serviceIntervalMs",
+        "Packet service interval in milliseconds",
+        g_config.serviceIntervalMs);
+
+    cmd.AddValue(
+        "durationMs",
+        "Experiment duration in milliseconds",
+        g_config.durationMs);
+
+    cmd.AddValue(
+        "packetCount",
+        "Number of packets to generate",
+        g_config.packetCount);
+
+    cmd.AddValue(
+        "csvFile",
+        "CSV output filename",
+        g_config.csvFile);
+
+    cmd.AddValue(
+        "fairnessTest",
+        "Enable controlled WRR fairness testing",
+        g_config.fairnessTest);
+
     cmd.Parse(argc, argv);
 
-    if (schedulingMode > 3)
+    if (g_config.schedulingMode > 3 ||
+        g_config.expiredPolicy > 1 ||
+        g_config.queueLimit == 0 ||
+        g_config.arrivalIntervalMs == 0 ||
+        g_config.serviceIntervalMs == 0 ||
+        g_config.durationMs == 0 ||
+        g_config.packetCount == 0)
     {
-        std::cerr << "Invalid schedulingMode. Use 0, 1, 2, or 3."
-                  << std::endl;
+        std::cerr << "Invalid experiment configuration.\n";
         return 1;
     }
 
-    if (expiredPolicy > 1)
-    {
-        std::cerr << "Invalid expiredPolicy. Use 0 (Drop) or 1 (Transmit)."
-                << std::endl;
-        return 1;
-    }
+    // Create and configure the queue disc.
+    g_queueDisc = CreateObject<FutureNetQueueDisc>();
 
-    Ptr<FutureNetQueueDisc> queueDisc = CreateObject<FutureNetQueueDisc>();
+    g_queueDisc->SetAttribute(
+        "SchedulingMode",
+        UintegerValue(g_config.schedulingMode));
 
-    queueDisc->SetAttribute("SchedulingMode", UintegerValue(schedulingMode));
-    queueDisc->SetAttribute("QueueLimit", UintegerValue(queueLimit));
-    queueDisc->SetAttribute("ExpiredPacketPolicy",
-                            UintegerValue(expiredPolicy));
+    g_queueDisc->SetAttribute(
+        "QueueLimit",
+        UintegerValue(g_config.queueLimit));
 
-    queueDisc->TraceConnectWithoutContext(
+    g_queueDisc->SetAttribute(
+        "ExpiredPacketPolicy",
+        UintegerValue(g_config.expiredPolicy));
+
+    // Connect the existing queue-disc trace sources.
+    g_queueDisc->TraceConnectWithoutContext(
         "DeadlineMiss",
         MakeCallback(&PrintDeadlineMiss));
 
-    queueDisc->TraceConnectWithoutContext(
+    g_queueDisc->TraceConnectWithoutContext(
         "ExpiredDrop",
-        MakeCallback(&PrintExpiredDrop));
+        MakeCallback(&RecordExpiredDrop));
 
-    // Initialize the queue discipline and its internal queues.
-    queueDisc->Initialize();
-
-    // Print the priority class selected when a packet is dequeued.
-    queueDisc->TraceConnectWithoutContext(
+    g_queueDisc->TraceConnectWithoutContext(
         "ClassDequeued",
-        MakeCallback(&PrintDequeue));
+        MakeCallback(&RecordDequeued));
 
-    struct FlowInfo
-    {
-        uint32_t flowId;
-        uint8_t priority;
-        double importance;
-        uint32_t deadlineMs;
-    };
+    g_queueDisc->Initialize();
 
-    // Five flows using three priority levels: 0 (highest), 1, and 2.
-    const FlowInfo flows[] = {
-        {1, 0, 0.95, 30},
-        {2, 1, 0.75, 20},
-        {3, 2, 0.50, 10},
-        {4, 0, 0.90, 15},
-        {5, 1, 0.65, 25},
-    };
+    std::cout << "Starting FutureNet QoS experiment\n"
+              << "Mode: "
+              << static_cast<uint32_t>(g_config.schedulingMode) << '\n'
+              << "Packet count: " << g_config.packetCount << '\n'
+              << "Queue limit: " << g_config.queueLimit << '\n'
+              << "Arrival interval: "
+              << g_config.arrivalIntervalMs << " ms\n"
+              << "Service interval: "
+              << g_config.serviceIntervalMs << " ms\n"
+              << "Duration: " << g_config.durationMs << " ms\n\n";
 
-    std::cout << "FutureNet QoS example" << std::endl;
-    std::cout << "Scheduling mode: " << schedulingMode << std::endl;
-    std::cout << "Enqueuing five flows..." << std::endl;
+    // Schedule packet generation and periodic service.
+    Simulator::ScheduleNow(&GeneratePacket, 0);
+    Simulator::ScheduleNow(&ServePacket);
 
-    for (const auto& flow : flows)
-    {
-        Ptr<Packet> packet = Create<Packet>(100);
-
-        // Attach traffic metadata.
-        FutureNetTrafficTag trafficTag;
-        trafficTag.SetPriority(flow.priority);
-        trafficTag.SetFlowId(flow.flowId);
-        trafficTag.SetImportance(flow.importance);
-        packet->ReplacePacketTag(trafficTag);
-
-        // Attach an absolute simulation-time deadline.
-        DeadlineTag deadlineTag;
-        deadlineTag.SetDeadline(MilliSeconds(flow.deadlineMs));
-        packet->ReplacePacketTag(deadlineTag);
-
-        Ptr<QueueDiscItem> item =
-            Create<ExampleQueueDiscItem>(packet,
-                                         Address(),
-                                         flow.priority,
-                                         flow.flowId,
-                                         flow.importance);
-
-        if (queueDisc->Enqueue(item))
-        {
-            std::cout << "  Enqueued flow " << flow.flowId
-                      << ", priority " << unsigned(flow.priority)
-                      << ", deadline " << flow.deadlineMs << " ms"
-                      << std::endl;
-        }
-        else
-        {
-            std::cout << "  Queue full: flow " << flow.flowId
-                      << " was rejected" << std::endl;
-        }
-    }
-
-    Simulator::Schedule(MilliSeconds(dequeueTimeMs), [queueDisc]() {
-        std::cout << "\nDequeuing packets at "
-                << Simulator::Now().GetMilliSeconds()
-                << " ms..." << std::endl;
-
-        while (queueDisc->GetNPackets() > 0)
-        {
-            Ptr<QueueDiscItem> item = queueDisc->Dequeue();
-
-            // An expired packet may be dropped by Dequeue().
-            // Continue processing the remaining packets.
-            if (item == nullptr)
-            {
-                continue;
-            }
-
-            FutureNetTrafficTag trafficTag;
-            if (item->GetPacket()->PeekPacketTag(trafficTag))
-            {
-                std::cout << "  Flow " << trafficTag.GetFlowId()
-                        << ", priority "
-                        << unsigned(trafficTag.GetPriority())
-                        << std::endl;
-            }
-        }
-    });
-
+    Simulator::Stop(MilliSeconds(g_config.durationMs));
     Simulator::Run();
 
+    WriteResults();
+
     Simulator::Destroy();
+
     return 0;
 }
