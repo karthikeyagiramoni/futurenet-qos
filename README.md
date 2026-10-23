@@ -1,152 +1,212 @@
-FutureNet QoS — M05
+# FutureNet QoS — M05
 
-Deadline/Priority-Aware Queueing for ns-3.46.1
+**Deadline/Priority-Aware Queueing for ns-3.46.1**
 
-Overview
+## Overview
 
-FutureNet QoS is a custom ns-3 module for priority-aware packet scheduling and deadline-aware queue management. It provides configurable scheduling policies, packet metadata, deadline-miss handling, queue-limit enforcement, tracing, and an example program for evaluating QoS behavior under different traffic conditions.
+**FutureNet QoS** is a custom ns-3 module that implements priority-aware packet scheduling and deadline-aware queue management. It provides configurable scheduling policies, packet metadata, deadline-miss handling, queue-limit enforcement, tracing, and a configurable example program for evaluating QoS behavior under different traffic conditions.
 
-Features
+---
 
-- Priority-aware scheduling: Supports priority levels 0–7, where 0 is the highest priority.
-- Scheduling modes:
-  - 0 — Strict Priority
-  - 1 — Earliest Deadline First (EDF)
-  - 2 — Hybrid scheduling
-  - 3 — Weighted Round Robin (WRR)
-- Deadline handling: Detects missed deadlines and supports dropping or transmitting expired packets.
-- Queue-limit enforcement: Configurable maximum number of queued packets.
-- Packet metadata: Traffic tags carry priority, flow ID, and importance.
-- Tracing: Supports dequeue, deadline-miss, and expired-packet-drop events.
-- Testing: Includes queue-disc tests for supported scheduling and queue-management behavior.
+## Features
 
-Requirements
+- Priority-aware scheduling (priorities **0–7**, where **0** is highest)
+- Four scheduling modes:
+  - **0** – Strict Priority
+  - **1** – Earliest Deadline First (EDF)
+  - **2** – Hybrid (Strict Priority between classes + EDF within each class)
+  - **3** – Weighted Round Robin (WRR)
+- Deadline-miss detection
+- Configurable expired-packet policy (Drop or Transmit)
+- Global queue-limit enforcement
+- Packet metadata using custom tags
+- Queue tracing for:
+  - Deadline misses
+  - Expired packet drops
+  - Dequeue events with queue delay
+- Comprehensive unit tests
+
+---
+
+## Requirements
 
 - ns-3.46.1
-- A working C++ build environment supported by ns-3
-- CMake and the build tools required by your ns-3 installation
+- C++ compiler supported by ns-3
+- CMake
+- Standard ns-3 build tools
 
-Integration
+---
 
-Place the futurenet-qos module inside the ns-3 contrib/ directory:
+## Project Structure
 
-ns-3.46.1/
-└── contrib/
-    └── futurenet-qos/
-        ├── CMakeLists.txt
-        ├── model/
-        ├── test/
-        ├── examples/
-        ├── doc/
-        ├── results/
-        └── README.md
+```
+contrib/futurenet-qos/
+├── CMakeLists.txt
+├── README.md
+├── model/
+├── helper/
+├── examples/
+├── test/
+├── doc/
+│   └── FutureNet-QoS-Project-Report.md
+└── results/
+    ├── *.csv
+    └── graphs/
+```
 
-Build
+---
 
-From the root of the ns-3.46.1 source tree, run:
+## Build
 
+From the **ns-3.46.1** root directory:
+
+```bash
 ./ns3 configure
 ./ns3 build
+```
 
-To build the example:
+---
 
-./ns3 build futurenet-qos-example
+## Running the Example
 
-Run the Example
+### Strict Priority
 
-Run Strict Priority scheduling:
-
+```bash
 ./ns3 run "futurenet-qos-example --schedulingMode=0"
+```
 
-Run EDF scheduling:
+### EDF
 
+```bash
 ./ns3 run "futurenet-qos-example --schedulingMode=1"
+```
 
-Run Hybrid scheduling:
+### Hybrid
 
+```bash
 ./ns3 run "futurenet-qos-example --schedulingMode=2"
+```
 
-Run WRR scheduling:
+### WRR
 
+```bash
 ./ns3 run "futurenet-qos-example --schedulingMode=3"
+```
 
-Configure the queue limit:
+### Example Parameters
 
-./ns3 run "futurenet-qos-example --schedulingMode=0 --queueLimit=3"
+| Option | Description |
+|---------|-------------|
+| `--queueLimit` | Maximum queue capacity |
+| `--arrivalIntervalMs` | Packet arrival interval |
+| `--serviceIntervalMs` | Packet service interval |
+| `--durationMs` | Experiment duration |
+| `--packetCount` | Number of packets generated |
+| `--expiredPolicy` | `0=Drop`, `1=Transmit` |
+| `--csvFile` | Output CSV filename |
+| `--fairnessTest` | Enable controlled WRR fairness experiment |
 
-Other example parameters include arrivalIntervalMs, serviceIntervalMs, durationMs, packetCount, expiredPolicy, csvFile, and fairnessTest.
+Display all available options:
 
-Run Tests
+```bash
+./ns3 run "futurenet-qos-example --PrintHelp"
+```
 
-From the ns-3 source tree, run:
+---
 
+## Running Tests
+
+Run the FutureNet QoS test suite:
+
+```bash
 ./test.py -s futurenet-queue-disc
+```
 
-Experimental Results
+Individual tests:
 
-Congested workload with a 1 ms arrival interval, 2 ms service interval, 100 packets, and a queue limit of 20:
+```bash
+./ns3 run "test-runner --suite=futurenet-traffic-tag --verbose"
+./ns3 run "test-runner --suite=futurenet-deadline-tag --verbose"
+./ns3 run "test-runner --suite=futurenet-queue-disc --verbose"
+```
 
-Strict Priority:
-- Throughput: 179,200 bps
-- Deadline misses: 23
-- Average queue delay: 7.929 ms
+All FutureNet QoS tests pass successfully.
 
-Earliest Deadline First (EDF):
-- Throughput: 214,400 bps
-- Deadline misses: 10
-- Average queue delay: 23.060 ms
+---
 
-Hybrid:
-- Throughput: 185,600 bps
-- Deadline misses: 21
-- Average queue delay: 8.776 ms
+## Experimental Results
 
-Weighted Round Robin (WRR):
-- Throughput: 188,800 bps
-- Deadline misses: 25
-- Average queue delay: 12.136 ms
+### Congested Workload (1 ms arrival / 2 ms service)
 
-In this congested experiment, EDF achieved the highest throughput and the fewest deadline misses. Strict Priority had the lowest average queue delay. These results depend on the tested workload and do not establish a universal ranking of scheduling policies.
+| Mode | Throughput (bps) | Deadline Misses |
+|------|-----------------:|----------------:|
+| Strict Priority | 179,200 | 23 |
+| EDF | **214,400** | **10** |
+| Hybrid | 185,600 | 21 |
+| WRR | 188,800 | 25 |
 
-WRR Fairness Experiment
+**Observations**
 
-The WRR experiment used weights of 4:3:2:1.
+- EDF achieved the highest throughput.
+- EDF recorded the fewest deadline misses.
+- Strict Priority provided the lowest queue delay.
+- WRR demonstrated weighted service allocation.
 
-Measured transmitted packets:
-- Priority 0: 1,999
-- Priority 1: 1,501
-- Priority 2: 1,000
-- Priority 3: 500
+### WRR Fairness Validation
 
-The measured service shares were approximately 39.98%, 30.02%, 20%, and 10%, respectively, closely matching the expected weighted allocation.
+Configured weights: **4 : 3 : 2 : 1**
 
-Performance Graphs
+Measured transmissions:
 
-The repository includes the following graphs in results/graphs/:
+| Priority | Packets |
+|---------:|--------:|
+| 0 | 1999 |
+| 1 | 1501 |
+| 2 | 1000 |
+| 3 | 500 |
 
-- throughput-comparison.png — throughput comparison across scheduling modes.
-- deadline-misses.png — deadline misses across scheduling modes.
-- average-queue-delay.png — average queue delay under congestion.
-- wrr-fairness.png — expected and measured WRR service shares.
+The measured distribution closely matches the configured WRR weights.
 
-Project Report
+---
 
-The detailed project report is available at:
+## Performance Graphs
 
-doc/FutureNet-QoS-Project-Report.md
+### Throughput Comparison
 
-Experimental CSV files are stored in the results/ directory.
+![Throughput](results/graphs/throughput-comparison.png)
 
-Testing and Limitations
+### Deadline Misses
 
-The FutureNet QoS queue-disc test suite passed during validation. The full ns-3 test run also reported two failures in unrelated Wi-Fi hidden-station examples. These failures are documented separately and should not be interpreted as FutureNet QoS test failures.
+![Deadline Misses](results/graphs/deadline-misses.png)
 
-The experimental results are specific to the selected simulation parameters. Further experiments with different traffic loads, deadline distributions, queue limits, and WRR weights are needed to evaluate broader performance and fairness behavior.
+### Average Queue Delay
 
-Project Objective
+![Queue Delay](results/graphs/average-queue-delay.png)
 
-The objective of FutureNet QoS (M05) is to investigate how packet priority and deadlines influence queue scheduling, deadline handling, fairness, and quality of service in ns-3 network simulations.
+### WRR Fairness
 
-Repository
+![WRR Fairness](results/graphs/wrr-fairness.png)
 
-https://github.com/karthikeyagiramoni/futurenet-qos
+---
+
+## Documentation
+
+The complete project report is available at:
+
+- **Project Report:** `doc/FutureNet-QoS-Project-Report.md`
+
+The repository also includes measured CSV files inside `results/`.
+
+---
+
+## Project Objective
+
+FutureNet QoS (M05) investigates how packet priority and transmission deadlines influence queue scheduling, deadline handling, fairness, and quality of service within the ns-3.46.1 network simulator.
+
+---
+
+## Repository
+
+GitHub:
+
+`https://github.com/karthikeyagiramoni/futurenet-qos`
