@@ -324,3 +324,30 @@ The results support the functional behavior of the scheduling policies for the t
 Overall, the evaluation provides a useful baseline for further development and systematic testing of FutureNet QoS scheduling in ns-3.
 
 
+## Performance Graphs
+
+The following graphs visualize the measured results from the FutureNet QoS scheduling experiments.
+
+### Throughput Comparison
+
+![Throughput comparison across scheduling modes](../results/graphs/throughput-comparison.png)
+
+EDF achieved the highest measured throughput in the congested workload at 214,400 bps.
+
+### Deadline Misses
+
+![Deadline misses across scheduling modes](../results/graphs/deadline-misses.png)
+
+EDF recorded 10 deadline misses, fewer than the other three scheduling modes in this experiment.
+
+### Average Queue Delay
+
+![Average queue delay across scheduling modes](../results/graphs/average-queue-delay.png)
+
+Strict Priority recorded the lowest average queue delay at 7.929 ms in the congested workload.
+
+### WRR Fairness
+
+![Expected and measured WRR service shares](../results/graphs/wrr-fairness.png)
+
+The measured WRR service shares closely matched the configured 4:3:2:1 weights, corresponding to expected shares of 40%, 30%, 20%, and 10%.
