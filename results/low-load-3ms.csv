@@ -1,0 +1,5 @@
+mode,generated,enqueued,enqueue_drops,expired_drops,transmitted,remaining_in_queue,deadline_misses,avg_queue_delay_ms,throughput_bps,priority_0_tx,priority_1_tx,priority_2_tx,priority_3_tx
+0,84,84,0,0,83,1,0,0.494,265600.00,21,21,21,20
+1,84,84,0,0,83,1,0,0.494,265600.00,21,21,21,20
+2,84,84,0,0,83,1,0,0.494,265600.00,21,21,21,20
+3,84,84,0,0,83,1,0,0.494,265600.00,21,21,21,20
