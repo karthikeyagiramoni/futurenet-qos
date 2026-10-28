@@ -97,6 +97,11 @@ From the **ns-3.46.1** root directory:
 
 | Option | Description |
 |---------|-------------|
+| `--maxPriority` | Maximum generated priority; priorities range from `0` to this value (default `4`, maximum `7`) |
+| `--noDeadlinePercent` | Approximate percentage of generated packets without a deadline (default `0`, range `0`–`100`) |
+| `--deadlineMode` | `high` uses the original 10–50 ms deadlines (default); `medium` uses 40–200 ms; `custom` uses the configured custom range |
+| `--customMinDeadlineMs` | Custom-mode minimum deadline in milliseconds (default `1`, range `1`–`60000`) |
+| `--customMaxDeadlineMs` | Custom-mode maximum deadline in milliseconds (default `60000`, maximum `60000`) |
 | `--queueLimit` | Maximum queue capacity |
 | `--arrivalIntervalMs` | Packet arrival interval |
 | `--serviceIntervalMs` | Packet service interval |
@@ -110,6 +115,30 @@ Display all available options:
 
 ```bash
 ./ns3 run "futurenet-qos-example --PrintHelp"
+```
+
+For example, to generate approximately 25% of packets without deadlines:
+
+```bash
+./ns3 run "futurenet-qos-example --noDeadlinePercent=25"
+```
+
+For example, generate priorities from 0 through 7 with:
+
+```bash
+./ns3 run "futurenet-qos-example --maxPriority=7"
+```
+
+Select the medium deadline range with:
+
+```bash
+./ns3 run "futurenet-qos-example --deadlineMode=medium"
+```
+
+Custom mode spreads deadlines across the configured minimum and maximum:
+
+```bash
+./ns3 run "futurenet-qos-example --deadlineMode=custom --customMinDeadlineMs=100 --customMaxDeadlineMs=5000"
 ```
 
 ---

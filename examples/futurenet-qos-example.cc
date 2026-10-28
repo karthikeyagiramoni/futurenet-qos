@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 using namespace ns3;
@@ -52,6 +53,11 @@ struct ExperimentConfig
 {
     uint32_t packetCount = 100;
     uint32_t queueLimit = 20;
+    uint32_t maxPriority = 4;
+    uint32_t noDeadlinePercent = 0;
+    std::string deadlineMode = "high";
+    uint32_t customMinDeadlineMs = 1;
+    uint32_t customMaxDeadlineMs = 60000;
     uint32_t arrivalIntervalMs = 1;
     uint32_t serviceIntervalMs = 2;
     uint32_t durationMs = 250;
@@ -79,6 +85,7 @@ static uint32_t g_transmittedByPriority[8] = {0};
 static uint64_t g_totalQueueDelayNs = 0;
 static uint32_t g_queueDelaySamples = 0;
 static uint32_t g_generated = 0;
+static uint32_t g_generatedWithoutDeadline = 0;
 
 // ------------------------------------------------------------
 // Deadline-miss callback
@@ -148,32 +155,60 @@ GeneratePacket(uint32_t sequence)
     }
 
     const uint32_t flowId = 1 + (sequence % 5);
-    const uint8_t priority = static_cast<uint8_t>(sequence % 4);
+    const uint8_t priority =
+        static_cast<uint8_t>(sequence % (g_config.maxPriority + 1));
 
     const double importance =
-        1.0 - (static_cast<double>(priority) * 0.2);
+        g_config.maxPriority == 0
+            ? 1.0
+            : 1.0 - static_cast<double>(priority) / g_config.maxPriority;
 
     Ptr<Packet> packet = Create<Packet>(100);
     ++g_generated;
 
-    const uint32_t deadlineMs = 10 + ((sequence % 5) * 10);
-
-    DeadlineTag deadlineTag;
-
-    if (g_config.fairnessTest)
+    const uint32_t deadlineStep = sequence % 5;
+    uint32_t deadlineMs = 10 + (deadlineStep * 10);
+    if (g_config.deadlineMode == "medium")
     {
-        // Keep packets from expiring during the fairness experiment.
-        deadlineTag.SetDeadline(
-            Simulator::Now() + Seconds(3600));
+        deadlineMs = 40 * (1 + deadlineStep);
+    }
+    else if (g_config.deadlineMode == "custom")
+    {
+        deadlineMs =
+            (g_config.customMinDeadlineMs * (4 - deadlineStep) +
+             g_config.customMaxDeadlineMs * deadlineStep) /
+            4;
+    }
+    const uint64_t noDeadlinePacketsBefore =
+        (static_cast<uint64_t>(sequence) * g_config.noDeadlinePercent + 50) / 100;
+    const uint64_t noDeadlinePacketsThrough =
+        (static_cast<uint64_t>(sequence + 1) * g_config.noDeadlinePercent + 50) / 100;
+    const bool noDeadline =
+        noDeadlinePacketsThrough > noDeadlinePacketsBefore;
+
+    if (noDeadline)
+    {
+        ++g_generatedWithoutDeadline;
     }
     else
     {
-        // Preserve the original deadline-sensitive experiment.
-        deadlineTag.SetDeadline(
-            Simulator::Now() + MilliSeconds(deadlineMs));
-    }
+        DeadlineTag deadlineTag;
 
-    packet->AddPacketTag(deadlineTag);
+        if (g_config.fairnessTest)
+        {
+            // Keep packets from expiring during the fairness experiment.
+            deadlineTag.SetDeadline(
+                Simulator::Now() + Seconds(3600));
+        }
+        else
+        {
+            // Preserve the original deadline-sensitive experiment.
+            deadlineTag.SetDeadline(
+                Simulator::Now() + MilliSeconds(deadlineMs));
+        }
+
+        packet->AddPacketTag(deadlineTag);
+    }
 
     Ptr<QueueDiscItem> item =
         Create<ExampleQueueDiscItem>(
@@ -191,7 +226,16 @@ GeneratePacket(uint32_t sequence)
                   << " seq=" << sequence
                   << " flow=" << flowId
                   << " priority=" << static_cast<uint32_t>(priority)
-                  << " deadline=" << deadlineMs << " ms"
+                  << " deadline=";
+        if (noDeadline)
+        {
+            std::cout << "none";
+        }
+        else
+        {
+            std::cout << deadlineMs << " ms";
+        }
+        std::cout
                   << " time=" << Simulator::Now().GetMilliSeconds()
                   << " ms\n";
     }
@@ -292,7 +336,8 @@ WriteResults()
         csv << "mode,generated,enqueued,enqueue_drops,expired_drops,"
             "transmitted,remaining_in_queue,deadline_misses,"
             "avg_queue_delay_ms,throughput_bps,"
-            "priority_0_tx,priority_1_tx,priority_2_tx,priority_3_tx\n";
+            "priority_0_tx,priority_1_tx,priority_2_tx,priority_3_tx,"
+            "priority_4_tx,priority_5_tx,priority_6_tx,priority_7_tx\n";
     }
 
     csv << static_cast<uint32_t>(g_config.schedulingMode) << ','
@@ -310,7 +355,11 @@ WriteResults()
         << g_transmittedByPriority[0] << ','
         << g_transmittedByPriority[1] << ','
         << g_transmittedByPriority[2] << ','
-        << g_transmittedByPriority[3] << '\n';
+        << g_transmittedByPriority[3] << ','
+        << g_transmittedByPriority[4] << ','
+        << g_transmittedByPriority[5] << ','
+        << g_transmittedByPriority[6] << ','
+        << g_transmittedByPriority[7] << '\n';
 
     csv.close();
 
@@ -318,6 +367,8 @@ WriteResults()
               << "Scheduling mode: "
               << static_cast<uint32_t>(g_config.schedulingMode) << '\n'
               << "Enqueued: " << g_enqueued << '\n'
+              << "Generated without deadline: "
+              << g_generatedWithoutDeadline << '\n'
               << "Transmitted: " << g_transmitted << '\n'
               << "Enqueue drops: " << g_enqueueDrops << '\n'
               << "Expired drops: " << g_expiredDrops << '\n'
@@ -351,6 +402,31 @@ main(int argc, char* argv[])
         "queueLimit",
         "Maximum number of packets in the queue",
         g_config.queueLimit);
+
+    cmd.AddValue(
+        "maxPriority",
+        "Maximum packet priority (generated priorities range from 0 to this value; default 4, maximum 7)",
+        g_config.maxPriority);
+
+    cmd.AddValue(
+        "noDeadlinePercent",
+        "Approximate percentage of generated packets with no deadline (0-100; default 0)",
+        g_config.noDeadlinePercent);
+
+    cmd.AddValue(
+        "deadlineMode",
+        "Deadline mode: high=original 10-50 ms (default), medium=40-200 ms, custom=selected min/max",
+        g_config.deadlineMode);
+
+    cmd.AddValue(
+        "customMinDeadlineMs",
+        "Minimum deadline for custom mode, in milliseconds (1-60000)",
+        g_config.customMinDeadlineMs);
+
+    cmd.AddValue(
+        "customMaxDeadlineMs",
+        "Maximum deadline for custom mode, in milliseconds (1-60000)",
+        g_config.customMaxDeadlineMs);
 
     cmd.AddValue(
         "expiredPolicy",
@@ -391,6 +467,14 @@ main(int argc, char* argv[])
 
     if (g_config.schedulingMode > 3 ||
         g_config.expiredPolicy > 1 ||
+        g_config.maxPriority > 7 ||
+        g_config.noDeadlinePercent > 100 ||
+        (g_config.deadlineMode != "high" &&
+         g_config.deadlineMode != "medium" &&
+         g_config.deadlineMode != "custom") ||
+        g_config.customMinDeadlineMs == 0 ||
+        g_config.customMaxDeadlineMs > 60000 ||
+        g_config.customMinDeadlineMs > g_config.customMaxDeadlineMs ||
         g_config.queueLimit == 0 ||
         g_config.arrivalIntervalMs == 0 ||
         g_config.serviceIntervalMs == 0 ||
@@ -407,6 +491,24 @@ main(int argc, char* argv[])
     g_queueDisc->SetAttribute(
         "SchedulingMode",
         UintegerValue(g_config.schedulingMode));
+
+    g_queueDisc->SetAttribute(
+        "NumPriorityClasses",
+        UintegerValue(g_config.maxPriority + 1));
+
+    if (g_config.schedulingMode == 3)
+    {
+        std::ostringstream weights;
+        for (uint32_t priority = 0; priority <= g_config.maxPriority; ++priority)
+        {
+            if (priority > 0)
+            {
+                weights << ',';
+            }
+            weights << (priority < 4 ? 4 - priority : 1);
+        }
+        g_queueDisc->SetAttribute("WrrWeights", StringValue(weights.str()));
+    }
 
     g_queueDisc->SetAttribute(
         "QueueLimit",
@@ -436,11 +538,22 @@ main(int argc, char* argv[])
               << static_cast<uint32_t>(g_config.schedulingMode) << '\n'
               << "Packet count: " << g_config.packetCount << '\n'
               << "Queue limit: " << g_config.queueLimit << '\n'
+              << "Priorities: 0-" << g_config.maxPriority << '\n'
+              << "Deadline mode: " << g_config.deadlineMode << '\n'
+              << "No-deadline packet target: "
+              << g_config.noDeadlinePercent << "%\n"
               << "Arrival interval: "
               << g_config.arrivalIntervalMs << " ms\n"
               << "Service interval: "
               << g_config.serviceIntervalMs << " ms\n"
               << "Duration: " << g_config.durationMs << " ms\n\n";
+
+    if (g_config.deadlineMode == "custom")
+    {
+        std::cout << "Custom deadline range: "
+                  << g_config.customMinDeadlineMs << '-'
+                  << g_config.customMaxDeadlineMs << " ms\n\n";
+    }
 
     // Schedule packet generation and periodic service.
     Simulator::ScheduleNow(&GeneratePacket, 0);

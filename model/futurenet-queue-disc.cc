@@ -54,7 +54,7 @@ FutureNetQueueDisc::GetTypeId()
                           UintegerValue(4),
                           MakeUintegerAccessor(
                               &FutureNetQueueDisc::m_numPriorityClasses),
-                          MakeUintegerChecker<uint32_t>(2, 8))
+                          MakeUintegerChecker<uint32_t>(1, 8))
             .AddAttribute("DefaultPriority",
                           "Default priority for packets without priority metadata.",
                           UintegerValue(4),
@@ -125,8 +125,8 @@ bool
 FutureNetQueueDisc::CheckConfig()
 {
     NS_ABORT_MSG_IF(
-        m_numPriorityClasses < 2 || m_numPriorityClasses > 8,
-        "NumPriorityClasses must be between 2 and 8.");
+        m_numPriorityClasses < 1 || m_numPriorityClasses > 8,
+        "NumPriorityClasses must be between 1 and 8.");
 
     NS_ABORT_MSG_IF(
         m_schedulingMode > 3,
