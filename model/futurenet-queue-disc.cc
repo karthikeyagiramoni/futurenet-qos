@@ -201,29 +201,34 @@ FutureNetQueueDisc::GetWrrWeights() const
 void
 FutureNetQueueDisc::InitializeParams()
 {
+    NS_LOG_FUNCTION(this);
+
     if (m_schedulingMode == 1)
     {
-        auto queue = CreateObject<FutureNetEdfQueue>();
-        queue->SetMaxSize(QueueSize(QueueSizeUnit::PACKETS, m_queueLimit));
+        // EDF: one global EDF queue.
+        Ptr<FutureNetEdfQueue> queue = CreateObject<FutureNetEdfQueue>();
+        queue->SetMaxSize(QueueSize(std::to_string(m_queueLimit) + "p"));
         AddInternalQueue(queue);
-        return;
     }
-
-    for (uint32_t i = 0; i < m_numPriorityClasses; ++i)
+    else if (m_schedulingMode == 2)
     {
-        if (m_schedulingMode == 2)
+        // Hybrid: one EDF queue per priority class.
+        for (uint32_t i = 0; i < m_numPriorityClasses; ++i)
         {
-            auto queue = CreateObject<FutureNetEdfQueue>();
-            queue->SetMaxSize(QueueSize(QueueSizeUnit::PACKETS, m_queueLimit));
+            Ptr<FutureNetEdfQueue> queue =
+                CreateObject<FutureNetEdfQueue>();
+            queue->SetMaxSize(QueueSize(std::to_string(m_queueLimit) + "p"));
             AddInternalQueue(queue);
         }
-        else
+    }
+    else
+    {
+        // Strict Priority and WRR: FIFO queues per class.
+        for (uint32_t i = 0; i < m_numPriorityClasses; ++i)
         {
-            auto queue =
-                CreateObjectWithAttributes<DropTailQueue<QueueDiscItem>>(
-                    "MaxSize",
-                    QueueSizeValue(QueueSize(QueueSizeUnit::PACKETS, m_queueLimit)));
-
+            Ptr<DropTailQueue<QueueDiscItem>> queue =
+                CreateObject<DropTailQueue<QueueDiscItem>>();
+            queue->SetMaxSize(QueueSize(std::to_string(m_queueLimit) + "p"));
             AddInternalQueue(queue);
         }
     }
