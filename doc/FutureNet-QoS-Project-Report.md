@@ -281,7 +281,7 @@ The following validation activities have been completed:
    - `wifi-simple-ht-hidden-stations` with RTS enabled.
 4. The four scheduling modes were compared under congested and lower-load conditions.
 5. The WRR fairness experiment was completed and its measured service shares were checked.
-6. The Git repository was clean of tracked changes, with commit `41bf2ec` synchronized with `origin/main`. An untracked local backup file remained.
+6. The advanced multi-flow example was built and run in all four scheduling modes; its per-flow CSV packet accounting was validated.
 
 The two Wi-Fi example failures have not been diagnosed further. They should be reported transparently as failures observed during the full ns-3 test run; the available evidence does not establish their root cause. They are not tests of the FutureNet QoS module, but their failure means the full simulator test suite should not be described as passing completely.
 
