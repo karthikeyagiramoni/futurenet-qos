@@ -1,2 +1,2 @@
-mode,generated,enqueued,enqueue_drops,expired_drops,transmitted,remaining_in_queue,deadline_misses,avg_queue_delay_ms,throughput_bps,priority_0_tx,priority_1_tx,priority_2_tx,priority_3_tx
-3,10000,10000,0,0,5000,5000,0,2000.399,400000.00,1999,1501,1000,500
+mode,generated,enqueued,enqueue_drops,expired_drops,transmitted,remaining_in_queue,deadline_misses,avg_queue_delay_ms,throughput_bps,priority_0_tx,priority_1_tx,priority_2_tx,priority_3_tx,priority_4_tx,priority_5_tx,priority_6_tx,priority_7_tx
+3,10000,10000,0,0,5000,5000,0,2000.399,400000.00,1999,1501,1000,500,0,0,0,0

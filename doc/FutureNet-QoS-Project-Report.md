@@ -76,6 +76,7 @@ All experiments were conducted using the FutureNet QoS example in ns-3.46.1.
 | Experiment duration | 250 ms |
 | Expired-packet policy | Drop (0) |
 | Packet size | 100 bytes |
+| Maximum priority | 3 (priorities 0–3) |
 | Scheduling modes | 0, 1, 2, 3 |
 
 The scheduling-mode mapping is:
@@ -100,6 +101,7 @@ Two additional comparisons used the following settings:
 | Arrival interval | 2 ms | 3 ms |
 | Service interval | 2 ms | 2 ms |
 | Duration | 250 ms | 250 ms |
+| Maximum priority | 3 | 3 |
 | Expired-packet policy | Drop | Drop |
 
 These experiments investigated whether the scheduling policy changed the results when traffic caused little queueing competition.
@@ -117,6 +119,7 @@ A separate controlled WRR run used:
 | Arrival interval | 1 ms |
 | Service interval | 2 ms |
 | Duration | 10,000 ms |
+| Maximum priority | 3 (priorities 0–3) |
 | Fairness-test option | Enabled |
 | Expired-packet policy | Drop (0) |
 

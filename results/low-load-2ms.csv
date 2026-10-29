@@ -1,5 +1,5 @@
-mode,generated,enqueued,enqueue_drops,expired_drops,transmitted,remaining_in_queue,deadline_misses,avg_queue_delay_ms,throughput_bps,priority_0_tx,priority_1_tx,priority_2_tx,priority_3_tx
-0,100,100,0,0,100,0,0,0.000,320000.00,25,25,25,25
-1,100,100,0,0,100,0,0,0.000,320000.00,25,25,25,25
-2,100,100,0,0,100,0,0,0.000,320000.00,25,25,25,25
-3,100,100,0,0,100,0,0,0.000,320000.00,25,25,25,25
+mode,generated,enqueued,enqueue_drops,expired_drops,transmitted,remaining_in_queue,deadline_misses,avg_queue_delay_ms,throughput_bps,priority_0_tx,priority_1_tx,priority_2_tx,priority_3_tx,priority_4_tx,priority_5_tx,priority_6_tx,priority_7_tx
+0,100,100,0,0,100,0,0,0.000,320000.00,25,25,25,25,0,0,0,0
+1,100,100,0,0,100,0,0,0.000,320000.00,25,25,25,25,0,0,0,0
+2,100,100,0,0,100,0,0,0.000,320000.00,25,25,25,25,0,0,0,0
+3,100,100,0,0,100,0,0,0.000,320000.00,25,25,25,25,0,0,0,0

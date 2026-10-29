@@ -53,7 +53,7 @@ struct ExperimentConfig
 {
     uint32_t packetCount = 100;
     uint32_t queueLimit = 20;
-    uint32_t maxPriority = 4;
+    uint32_t maxPriority = 3;
     uint32_t noDeadlinePercent = 0;
     std::string deadlineMode = "high";
     uint32_t customMinDeadlineMs = 1;
@@ -405,7 +405,7 @@ main(int argc, char* argv[])
 
     cmd.AddValue(
         "maxPriority",
-        "Maximum packet priority (generated priorities range from 0 to this value; default 4, maximum 7)",
+        "Maximum packet priority (generated priorities range from 0 to this value; default 3, maximum 7)",
         g_config.maxPriority);
 
     cmd.AddValue(

@@ -69,6 +69,41 @@ From the **ns-3.46.1** root directory:
 
 ## Running the Example
 
+### Advanced Multi-Flow Example
+
+The advanced example runs four concurrent flows through one shared queue. Each
+flow has a different priority, packet size, arrival interval, and deadline.
+The default workload offers traffic faster than the shared service rate, making
+the scheduling policies compete under congestion.
+
+| Flow | Priority | Packet size | Arrival interval | Deadline |
+|---:|---:|---:|---:|---:|
+| 1 | 0 | 100 bytes | 1 ms | 10 ms |
+| 2 | 1 | 300 bytes | 2 ms | 30 ms |
+| 3 | 2 | 700 bytes | 3 ms | 60 ms |
+| 4 | 3 | 1,200 bytes | 4 ms | 100 ms |
+
+Run the default Strict Priority scenario:
+
+```bash
+./ns3 run "futurenet-qos-advanced-example"
+```
+
+Select another scheduling policy or adjust the shared queue, service interval,
+simulation duration, or expired-packet handling:
+
+```bash
+./ns3 run "futurenet-qos-advanced-example --schedulingMode=1 --queueLimit=200 --serviceIntervalMs=2 --durationMs=1000 --expiredPolicy=1"
+```
+
+The example writes per-flow packet accounting, deadline misses, average queue
+delay, and throughput to `futurenet-qos-advanced-results.csv`. Its CSV includes
+remaining queue packets so generated packets can be reconciled with drops,
+transmissions, and end-of-run backlog. The collected four-mode comparison is
+available at `results/advanced-multiflow.csv`; it uses the default 1,000 ms
+duration, 100-packet shared queue, 2 ms service interval, and drop-expired
+policy. Use `--PrintHelp` to list all options.
+
 ### Strict Priority
 
 ```bash
@@ -97,7 +132,7 @@ From the **ns-3.46.1** root directory:
 
 | Option | Description |
 |---------|-------------|
-| `--maxPriority` | Maximum generated priority; priorities range from `0` to this value (default `4`, maximum `7`) |
+| `--maxPriority` | Maximum generated priority; priorities range from `0` to this value (default `3`, maximum `7`) |
 | `--noDeadlinePercent` | Approximate percentage of generated packets without a deadline (default `0`, range `0`–`100`) |
 | `--deadlineMode` | `high` uses the original 10–50 ms deadlines (default); `medium` uses 40–200 ms; `custom` uses the configured custom range |
 | `--customMinDeadlineMs` | Custom-mode minimum deadline in milliseconds (default `1`, range `1`–`60000`) |
@@ -178,8 +213,11 @@ All FutureNet QoS tests pass successfully.
 
 - EDF achieved the highest throughput.
 - EDF recorded the fewest deadline misses.
-- Strict Priority provided the lowest queue delay.
+- Strict Priority provided the lowest average queue delay (7.929 ms).
 - WRR demonstrated weighted service allocation.
+
+These scheduling comparison runs use priorities 0 through 3, matching the
+example's default four priority classes.
 
 ### WRR Fairness Validation
 

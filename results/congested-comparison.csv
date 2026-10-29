@@ -1,5 +1,5 @@
-mode,generated,enqueued,enqueue_drops,expired_drops,transmitted,remaining_in_queue,deadline_misses,avg_queue_delay_ms,throughput_bps,priority_0_tx,priority_1_tx,priority_2_tx,priority_3_tx
-0,100,79,21,23,56,0,23,7.929,179200.00,25,15,15,1
-1,100,77,23,10,67,0,10,23.060,214400.00,25,8,25,9
-2,100,79,21,21,58,0,21,8.776,185600.00,25,17,16,0
-3,100,84,16,25,59,0,25,12.136,188800.00,25,15,14,5
+mode,generated,enqueued,enqueue_drops,expired_drops,transmitted,remaining_in_queue,deadline_misses,avg_queue_delay_ms,throughput_bps,priority_0_tx,priority_1_tx,priority_2_tx,priority_3_tx,priority_4_tx,priority_5_tx,priority_6_tx,priority_7_tx
+0,100,79,21,23,56,0,23,7.929,179200.00,25,15,15,1,0,0,0,0
+1,100,77,23,10,67,0,10,23.060,214400.00,25,8,25,9,0,0,0,0
+2,100,79,21,21,58,0,21,8.776,185600.00,25,17,16,0,0,0,0,0
+3,100,84,16,25,59,0,25,12.136,188800.00,25,15,14,5,0,0,0,0
