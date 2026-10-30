@@ -472,14 +472,18 @@ main(int argc, char* argv[])
         (g_config.deadlineMode != "high" &&
          g_config.deadlineMode != "medium" &&
          g_config.deadlineMode != "custom") ||
-        g_config.customMinDeadlineMs == 0 ||
+        g_config.customMinDeadlineMs <= 0 ||
         g_config.customMaxDeadlineMs > 60000 ||
         g_config.customMinDeadlineMs > g_config.customMaxDeadlineMs ||
-        g_config.queueLimit == 0 ||
-        g_config.arrivalIntervalMs == 0 ||
-        g_config.serviceIntervalMs == 0 ||
-        g_config.durationMs == 0 ||
-        g_config.packetCount == 0)
+        g_config.queueLimit <= 0 ||
+        g_config.arrivalIntervalMs <= 0 ||
+        g_config.serviceIntervalMs <= 0 ||
+        g_config.durationMs <= 0 ||
+        g_config.packetCount <= 0 ||
+        g_config.schedulingMode < 0 ||
+        g_config.expiredPolicy < 0 ||
+        g_config.maxPriority<0 ||
+        g_config.noDeadlinePercent < 0)
     {
         std::cerr << "Invalid experiment configuration.\n";
         return 1;

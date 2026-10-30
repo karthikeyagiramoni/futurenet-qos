@@ -379,8 +379,8 @@ main(int argc, char* argv[])
                      g_config.scheduleCsvFile);
     command.Parse(argc, argv);
 
-    if (g_config.schedulingMode > 3 || g_config.expiredPolicy > 1 || g_config.queueLimit == 0 ||
-        g_config.serviceIntervalMs == 0 || g_config.durationMs == 0)
+    if (g_config.schedulingMode > 3 || g_config.expiredPolicy > 1 || g_config.queueLimit <= 0 ||
+        g_config.serviceIntervalMs <= 0 || g_config.durationMs <= 0 || g_config.schedulingMode < 0 || g_config.expiredPolicy < 0 )
     {
         std::cerr << "Invalid experiment configuration.\n";
         return 1;
