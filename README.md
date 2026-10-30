@@ -72,16 +72,18 @@ From the **ns-3.46.1** root directory:
 ### Advanced Multi-Flow Example
 
 The advanced example runs four concurrent flows through one shared queue. Each
-flow has a different priority, packet size, arrival interval, and deadline.
-The default workload offers traffic faster than the shared service rate, making
-the scheduling policies compete under congestion.
+flow has a different priority, packet size, and arrival interval. Packet
+deadlines vary deterministically from 250 to 1,000 ms after arrival, independently
+of priority. An initial burst of eight packets per flow ensures every class is
+backlogged at startup, making the selection order visible for Strict Priority,
+EDF, Hybrid, and WRR.
 
-| Flow | Priority | Packet size | Arrival interval | Deadline |
+| Flow | Priority | Packet size | Arrival interval | Deadline range |
 |---:|---:|---:|---:|---:|
-| 1 | 0 | 100 bytes | 1 ms | 10 ms |
-| 2 | 1 | 300 bytes | 2 ms | 30 ms |
-| 3 | 2 | 700 bytes | 3 ms | 60 ms |
-| 4 | 3 | 1,200 bytes | 4 ms | 100 ms |
+| 1 | 0 | 100 bytes | 4 ms | 250–1,000 ms |
+| 2 | 1 | 300 bytes | 5 ms | 250–1,000 ms |
+| 3 | 2 | 700 bytes | 6 ms | 250–1,000 ms |
+| 4 | 3 | 1,200 bytes | 7 ms | 250–1,000 ms |
 
 Run the default Strict Priority scenario:
 
@@ -99,10 +101,13 @@ simulation duration, or expired-packet handling:
 The example writes per-flow packet accounting, deadline misses, average queue
 delay, and throughput to `futurenet-qos-advanced-results.csv`. Its CSV includes
 remaining queue packets so generated packets can be reconciled with drops,
-transmissions, and end-of-run backlog. The collected four-mode comparison is
-available at `results/advanced-multiflow.csv`; it uses the default 1,000 ms
-duration, 100-packet shared queue, 2 ms service interval, and drop-expired
-policy. Use `--PrintHelp` to list all options.
+transmissions, and end-of-run backlog. It also writes every successful
+transmission, in scheduler order with its priority, deadline, and queue delay,
+to `futurenet-qos-advanced-schedule.csv`. The mode name is included in both
+outputs. The collected four-mode comparison is available at
+`results/advanced-multiflow.csv`; it uses the default 1,000 ms duration,
+100-packet shared queue, 2 ms service interval, and drop-expired policy. Use
+`--PrintHelp` to list all options.
 
 ### Strict Priority
 

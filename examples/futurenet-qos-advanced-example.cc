@@ -12,6 +12,7 @@
 #include <iostream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 using namespace ns3;
 
@@ -19,6 +20,11 @@ namespace
 {
 
 constexpr uint32_t FLOW_COUNT = 4;
+constexpr uint32_t INITIAL_BURST_PACKETS_PER_FLOW = 8;
+constexpr uint32_t MIN_DEADLINE_MS = 250;
+constexpr uint32_t MAX_DEADLINE_MS = 1000;
+// Shuffled phases keep the generated deadlines from tracking priority order.
+const std::array<uint32_t, FLOW_COUNT> DEADLINE_PHASES_MS = {600, 300, 0, 450};
 
 struct FlowConfig
 {
@@ -26,14 +32,13 @@ struct FlowConfig
     uint8_t priority;
     uint32_t packetSizeBytes;
     uint32_t arrivalIntervalMs;
-    uint32_t deadlineMs;
 };
 
 const std::array<FlowConfig, FLOW_COUNT> FLOW_CONFIGS = {{
-    {1, 0, 100, 1, 10},
-    {2, 1, 300, 2, 30},
-    {3, 2, 700, 3, 60},
-    {4, 3, 1200, 4, 100},
+    {1, 0, 100, 4},
+    {2, 1, 300, 5},
+    {3, 2, 700, 6},
+    {4, 3, 1200, 7},
 }};
 
 struct FlowStats
@@ -56,6 +61,16 @@ struct ExperimentConfig
     uint8_t schedulingMode{0};
     uint8_t expiredPolicy{0};
     std::string csvFile{"futurenet-qos-advanced-results.csv"};
+    std::string scheduleCsvFile{"futurenet-qos-advanced-schedule.csv"};
+};
+
+struct TransmissionRecord
+{
+    uint32_t flowId;
+    uint8_t priority;
+    uint64_t deadlineTimeMs;
+    uint64_t timeMs;
+    uint64_t queueDelayNs;
 };
 
 class AdvancedQueueDiscItem : public QueueDiscItem
@@ -88,8 +103,38 @@ ExperimentConfig g_config;
 Ptr<FutureNetQueueDisc> g_queueDisc;
 std::array<FlowStats, FLOW_COUNT> g_flowStats;
 std::unordered_map<uint64_t, Time> g_enqueueTimes;
+std::vector<TransmissionRecord> g_transmissions;
 uint64_t g_totalTransmittedBytes{0};
 uint32_t g_totalTransmitted{0};
+
+const char*
+GetSchedulingModeName(uint8_t schedulingMode)
+{
+    switch (schedulingMode)
+    {
+    case 0:
+        return "Strict Priority";
+    case 1:
+        return "Earliest Deadline First (EDF)";
+    case 2:
+        return "Hybrid (Strict Priority + EDF)";
+    case 3:
+        return "Weighted Round Robin (WRR)";
+    default:
+        return "Invalid";
+    }
+}
+
+uint32_t
+GetPacketDeadlineMs(const FlowConfig& flow, uint32_t packetSequence)
+{
+    const uint32_t deadlineRange = MAX_DEADLINE_MS - MIN_DEADLINE_MS + 1;
+    const uint64_t offset =
+        (static_cast<uint64_t>(packetSequence) * 311 +
+         DEADLINE_PHASES_MS.at(flow.flowId - 1)) %
+        deadlineRange;
+    return MIN_DEADLINE_MS + static_cast<uint32_t>(offset);
+}
 
 uint32_t
 FindFlowIndex(uint32_t flowId)
@@ -114,20 +159,16 @@ RecordExpiredDrop(uint32_t flowId, uint8_t)
 }
 
 void
-GeneratePacket(uint32_t flowIndex)
+EnqueuePacket(uint32_t flowIndex)
 {
     const FlowConfig& flow = FLOW_CONFIGS.at(flowIndex);
-    if (Simulator::Now() >= MilliSeconds(g_config.durationMs))
-    {
-        return;
-    }
-
     FlowStats& stats = g_flowStats[flowIndex];
-    ++stats.generated;
+    const uint32_t packetSequence = stats.generated++;
 
     Ptr<Packet> packet = Create<Packet>(flow.packetSizeBytes);
     DeadlineTag deadlineTag;
-    deadlineTag.SetDeadline(Simulator::Now() + MilliSeconds(flow.deadlineMs));
+    deadlineTag.SetDeadline(
+        Simulator::Now() + MilliSeconds(GetPacketDeadlineMs(flow, packetSequence)));
     packet->AddPacketTag(deadlineTag);
 
     Ptr<QueueDiscItem> item =
@@ -142,6 +183,18 @@ GeneratePacket(uint32_t flowIndex)
     {
         ++stats.enqueueDrops;
     }
+}
+
+void
+GeneratePacket(uint32_t flowIndex)
+{
+    const FlowConfig& flow = FLOW_CONFIGS.at(flowIndex);
+    if (Simulator::Now() >= MilliSeconds(g_config.durationMs))
+    {
+        return;
+    }
+
+    EnqueuePacket(flowIndex);
 
     Simulator::Schedule(MilliSeconds(flow.arrivalIntervalMs), &GeneratePacket, flowIndex);
 }
@@ -176,6 +229,17 @@ ServePacket()
         }
         stats.totalQueueDelayNs +=
             static_cast<uint64_t>((Simulator::Now() - enqueueTime->second).GetNanoSeconds());
+        DeadlineTag deadlineTag;
+        if (!item->GetPacket()->PeekPacketTag(deadlineTag))
+        {
+            NS_FATAL_ERROR("Dequeued packet is missing its deadline tag");
+        }
+        g_transmissions.push_back(
+            {trafficTag.GetFlowId(),
+             trafficTag.GetPriority(),
+             static_cast<uint64_t>(deadlineTag.GetDeadline().GetMilliSeconds()),
+             static_cast<uint64_t>(Simulator::Now().GetMilliSeconds()),
+             static_cast<uint64_t>((Simulator::Now() - enqueueTime->second).GetNanoSeconds())});
         g_enqueueTimes.erase(enqueueTime);
     }
 
@@ -217,9 +281,34 @@ WriteResults()
         return false;
     }
 
-    csv << "mode,flow_id,priority,packet_size_bytes,arrival_interval_ms,deadline_ms,"
+    std::ofstream scheduleCsv(g_config.scheduleCsvFile, std::ios::trunc);
+    if (!scheduleCsv.is_open())
+    {
+        std::cerr << "Error: Could not open schedule CSV file: "
+                  << g_config.scheduleCsvFile << '\n';
+        return false;
+    }
+
+    csv << "mode,policy,flow_id,priority,packet_size_bytes,arrival_interval_ms,"
+           "deadline_min_ms,deadline_max_ms,"
            "generated,enqueued,enqueue_drops,expired_drops,transmitted,remaining_in_queue,"
            "deadline_misses,avg_queue_delay_ms,throughput_bps\n";
+
+    scheduleCsv << "mode,policy,transmission_index,time_ms,flow_id,priority,"
+                   "deadline_time_ms,queue_delay_ms\n";
+    for (uint32_t i = 0; i < g_transmissions.size(); ++i)
+    {
+        const TransmissionRecord& transmission = g_transmissions[i];
+        scheduleCsv << static_cast<uint32_t>(g_config.schedulingMode) << ','
+                    << '"' << GetSchedulingModeName(g_config.schedulingMode) << '"' << ','
+                    << (i + 1) << ','
+                    << transmission.timeMs << ','
+                    << transmission.flowId << ','
+                    << static_cast<uint32_t>(transmission.priority) << ','
+                    << transmission.deadlineTimeMs << ','
+                    << std::fixed << std::setprecision(3)
+                    << static_cast<double>(transmission.queueDelayNs) / 1e6 << '\n';
+    }
 
     const double durationSeconds = static_cast<double>(g_config.durationMs) / 1000.0;
     for (uint32_t i = 0; i < FLOW_COUNT; ++i)
@@ -238,11 +327,13 @@ WriteResults()
             stats.enqueued - stats.expiredDrops - stats.transmitted;
 
         csv << static_cast<uint32_t>(g_config.schedulingMode) << ','
+            << '"' << GetSchedulingModeName(g_config.schedulingMode) << '"' << ','
             << flow.flowId << ','
             << static_cast<uint32_t>(flow.priority) << ','
             << flow.packetSizeBytes << ','
             << flow.arrivalIntervalMs << ','
-            << flow.deadlineMs << ','
+            << MIN_DEADLINE_MS << ','
+            << MAX_DEADLINE_MS << ','
             << stats.generated << ','
             << stats.enqueued << ','
             << stats.enqueueDrops << ','
@@ -254,7 +345,18 @@ WriteResults()
             << std::setprecision(2) << throughputBps << '\n';
     }
 
-    return csv.good();
+    if (!csv.good())
+    {
+        std::cerr << "Error while writing per-flow CSV file: " << g_config.csvFile << '\n';
+        return false;
+    }
+    if (!scheduleCsv.good())
+    {
+        std::cerr << "Error while writing schedule CSV file: "
+                  << g_config.scheduleCsvFile << '\n';
+        return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -273,12 +375,19 @@ main(int argc, char* argv[])
     command.AddValue("expiredPolicy", "0=Drop expired packets, 1=Transmit expired packets",
                      g_config.expiredPolicy);
     command.AddValue("csvFile", "Per-flow CSV output filename", g_config.csvFile);
+    command.AddValue("scheduleCsvFile", "Packet transmission-order CSV output filename",
+                     g_config.scheduleCsvFile);
     command.Parse(argc, argv);
 
     if (g_config.schedulingMode > 3 || g_config.expiredPolicy > 1 || g_config.queueLimit == 0 ||
         g_config.serviceIntervalMs == 0 || g_config.durationMs == 0)
     {
         std::cerr << "Invalid experiment configuration.\n";
+        return 1;
+    }
+    if (g_config.csvFile == g_config.scheduleCsvFile)
+    {
+        std::cerr << "The per-flow and schedule CSV files must have different filenames.\n";
         return 1;
     }
 
@@ -293,23 +402,39 @@ main(int argc, char* argv[])
     g_queueDisc->Initialize();
 
     std::cout << "Starting advanced FutureNet QoS multi-flow experiment\n"
-              << "Mode: " << static_cast<uint32_t>(g_config.schedulingMode) << '\n'
+              << "Mode: " << static_cast<uint32_t>(g_config.schedulingMode) << " ("
+              << GetSchedulingModeName(g_config.schedulingMode) << ")\n"
               << "Priority classes: 4 (0-3)\n"
               << "Queue limit: " << g_config.queueLimit << '\n'
               << "Service interval: " << g_config.serviceIntervalMs << " ms\n"
-              << "Duration: " << g_config.durationMs << " ms\n";
+              << "Duration: " << g_config.durationMs << " ms\n"
+              << "Initial burst: " << INITIAL_BURST_PACKETS_PER_FLOW
+              << " packets per flow\n"
+              << "Per-packet deadlines: " << MIN_DEADLINE_MS << '-'
+              << MAX_DEADLINE_MS << " ms after arrival, independent of priority\n";
+    if (g_config.schedulingMode == 3)
+    {
+        std::cout << "WRR weights: 4:3:2:1 (priorities 0:1:2:3)\n";
+    }
     for (const FlowConfig& flow : FLOW_CONFIGS)
     {
         std::cout << "Flow " << flow.flowId << ": priority="
                   << static_cast<uint32_t>(flow.priority)
                   << ", packetSize=" << flow.packetSizeBytes << " bytes"
                   << ", arrivalInterval=" << flow.arrivalIntervalMs << " ms"
-                  << ", deadline=" << flow.deadlineMs << " ms\n";
+                  << ", deadlineRange=" << MIN_DEADLINE_MS << '-'
+                  << MAX_DEADLINE_MS << " ms\n";
     }
 
     for (uint32_t i = 0; i < FLOW_COUNT; ++i)
     {
-        Simulator::ScheduleNow(&GeneratePacket, i);
+        for (uint32_t packet = 0; packet < INITIAL_BURST_PACKETS_PER_FLOW; ++packet)
+        {
+            Simulator::ScheduleNow(&EnqueuePacket, i);
+        }
+        Simulator::Schedule(MilliSeconds(FLOW_CONFIGS[i].arrivalIntervalMs),
+                            &GeneratePacket,
+                            i);
     }
     Simulator::ScheduleNow(&ServePacket);
     Simulator::Stop(MilliSeconds(g_config.durationMs));
@@ -348,7 +473,8 @@ main(int argc, char* argv[])
               << static_cast<double>(g_totalTransmittedBytes) * 8.0 * 1000.0 /
                      g_config.durationMs
               << " bps\n"
-              << "CSV file: " << g_config.csvFile << '\n';
+              << "Per-flow CSV file: " << g_config.csvFile << '\n'
+              << "Transmission-order CSV file: " << g_config.scheduleCsvFile << '\n';
 
     Simulator::Destroy();
     return 0;
